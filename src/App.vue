@@ -51,6 +51,7 @@ type AttendanceDayGroup = {
   dayLabel: string;
   records: AttendanceRecord[];
 };
+
 type PresenceMembershipAlertTone = 'success' | 'warning' | 'danger';
 
 type PresenceMembershipAlert = {
@@ -78,6 +79,7 @@ type RenewalFormState = {
 };
 
 type MembershipSortOrder = 'end-asc' | 'end-desc';
+type AttendanceListFilter = 'all' | AttendanceAction;
 
 const isPresenceClientWindow = new URLSearchParams(window.location.search).get('view') === 'presence-client';
 
@@ -100,6 +102,8 @@ const isStockSaleModalOpen = ref(false);
 const isStockRestockModalOpen = ref(false);
 const currentPage = ref(1);
 const membersPerPage = 6;
+const attendanceCurrentPage = ref(1);
+const attendanceItemsPerPage = 10;
 const stockCurrentPage = ref(1);
 const stockItemsPerPage = 10;
 const attendanceHistory = ref<AttendanceRecord[]>([]);
@@ -107,6 +111,7 @@ const isAttendanceLoading = ref(true);
 const checkInPhone = ref('');
 const presenceLookup = ref('');
 const selectedAttendanceAction = ref<AttendanceAction>('check-in');
+const attendanceListFilter = ref<AttendanceListFilter>('all');
 const stockItems = ref<StockItem[]>([]);
 const payments = ref<PaymentRecord[]>([]);
 const membershipTypes = ref<MembershipType[]>([]);
@@ -502,6 +507,59 @@ const todayCheckOuts = computed(() => todayAttendance.value.filter((entry) => en
 
 const uniqueVisitorsToday = computed(() => {
   return new Set(todayAttendance.value.map((entry) => entry.memberId)).size;
+});
+
+const todayAttendanceRecords = computed(() => {
+  return [...todayAttendance.value].sort((left, right) => {
+    const dateOrder = right.checkedInAt.localeCompare(left.checkedInAt);
+    return dateOrder !== 0 ? dateOrder : right.id - left.id;
+  });
+});
+
+const filteredTodayAttendanceRecords = computed(() => {
+  if (attendanceListFilter.value === 'all') {
+    return todayAttendanceRecords.value;
+  }
+
+  return todayAttendanceRecords.value.filter((entry) => entry.action === attendanceListFilter.value);
+});
+
+const attendanceTotalPages = computed(() => {
+  return Math.max(1, Math.ceil(filteredTodayAttendanceRecords.value.length / attendanceItemsPerPage));
+});
+
+const attendanceVisiblePages = computed(() => {
+  const maxVisiblePages = 10;
+
+  if (attendanceTotalPages.value <= maxVisiblePages) {
+    return Array.from({ length: attendanceTotalPages.value }, (_value, index) => index + 1);
+  }
+
+  const halfWindow = Math.floor(maxVisiblePages / 2);
+  let startPage = Math.max(1, attendanceCurrentPage.value - halfWindow);
+  let endPage = startPage + maxVisiblePages - 1;
+
+  if (endPage > attendanceTotalPages.value) {
+    endPage = attendanceTotalPages.value;
+    startPage = endPage - maxVisiblePages + 1;
+  }
+
+  return Array.from({ length: endPage - startPage + 1 }, (_value, index) => startPage + index);
+});
+
+const paginatedTodayAttendance = computed(() => {
+  const startIndex = (attendanceCurrentPage.value - 1) * attendanceItemsPerPage;
+  return filteredTodayAttendanceRecords.value.slice(startIndex, startIndex + attendanceItemsPerPage);
+});
+
+const attendancePaginationLabel = computed(() => {
+  if (filteredTodayAttendanceRecords.value.length === 0) {
+    return '0-0 sur 0 presences aujourd hui';
+  }
+
+  const startIndex = (attendanceCurrentPage.value - 1) * attendanceItemsPerPage + 1;
+  const endIndex = Math.min(attendanceCurrentPage.value * attendanceItemsPerPage, filteredTodayAttendanceRecords.value.length);
+  return `${startIndex}-${endIndex} sur ${filteredTodayAttendanceRecords.value.length} presences aujourd hui`;
 });
 
 const groupedAttendanceHistory = computed<AttendanceDayGroup[]>(() => {
@@ -1527,8 +1585,23 @@ const goToStockPage = (page: number) => {
   stockCurrentPage.value = Math.min(Math.max(page, 1), stockTotalPages.value);
 };
 
+const goToAttendancePage = (page: number) => {
+  attendanceCurrentPage.value = Math.min(Math.max(page, 1), attendanceTotalPages.value);
+};
+
 watch([searchQuery, membershipTypeFilter, membershipSortOrder], () => {
   currentPage.value = 1;
+});
+
+watch(filteredTodayAttendanceRecords, (value) => {
+  if (value.length === 0) {
+    attendanceCurrentPage.value = 1;
+    return;
+  }
+
+  if (attendanceCurrentPage.value > attendanceTotalPages.value) {
+    attendanceCurrentPage.value = attendanceTotalPages.value;
+  }
 });
 
 watch(stockSearchQuery, () => {
@@ -2282,41 +2355,75 @@ onMounted(async () => {
             </form>
 
             <div class="checkin-hint">
-              Ce poste enregistre les presences manuellement tandis que l historique ci-dessous reste groupe par jour.
+              Ce poste enregistre les presences manuellement. La liste ci-dessous affiche uniquement aujourd hui, du plus recent au plus ancien.
             </div>
 
             <div class="panel-header history-header">
               <div>
-                <h2>Historique des presences</h2>
-                <p>Telephone, ID membre et operations client regroupes par jour</p>
+                <h2>Presences du jour</h2>
+                <p>Liste du jour uniquement, triee par dernier passage avec pagination</p>
+              </div>
+              <div class="panel-actions">
+                <label>
+                  <span>Filtrer</span>
+                  <select v-model="attendanceListFilter" class="select-input">
+                    <option value="all">Tous</option>
+                    <option value="check-in">Entree</option>
+                    <option value="check-out">Sortie</option>
+                  </select>
+                </label>
               </div>
             </div>
 
             <div v-if="isAttendanceLoading" class="empty-state">Chargement de l historique des presences...</div>
-            <div v-else-if="groupedAttendanceHistory.length === 0" class="empty-state">Aucune presence n a encore ete enregistree.</div>
+            <div v-else-if="filteredTodayAttendanceRecords.length === 0" class="empty-state">Aucune presence ne correspond au filtre aujourd hui.</div>
             <div v-else class="attendance-history-list">
-              <section v-for="group in groupedAttendanceHistory" :key="group.dayKey" class="attendance-day-group">
-                <div class="attendance-day-header">
-                  <h3>{{ group.dayLabel }}</h3>
-                  <span>{{ group.records.length }} evenement{{ group.records.length > 1 ? 's' : '' }}</span>
+              <div v-for="entry in paginatedTodayAttendance" :key="entry.id" class="attendance-row">
+                <div class="attendance-copy">
+                  <strong>{{ entry.memberName }}</strong>
+                  <span>{{ entry.memberPhone }}</span>
                 </div>
+                <div class="attendance-meta">
+                  <span :class="['attendance-action', entry.action === 'check-out' && 'is-check-out']">
+                    {{ formatAttendanceAction(entry.action) }}
+                  </span>
+                  <span class="attendance-source">{{ formatAttendanceSource(entry.source) }}</span>
+                  <span>{{ formatAttendanceDate(entry.checkedInAt) }}</span>
+                </div>
+              </div>
 
-                <div class="attendance-day-rows">
-                  <div v-for="entry in group.records" :key="entry.id" class="attendance-row">
-                    <div class="attendance-copy">
-                      <strong>{{ entry.memberName }}</strong>
-                      <span>{{ entry.memberPhone }}</span>
-                    </div>
-                    <div class="attendance-meta">
-                      <span :class="['attendance-action', entry.action === 'check-out' && 'is-check-out']">
-                        {{ formatAttendanceAction(entry.action) }}
-                      </span>
-                      <span class="attendance-source">{{ formatAttendanceSource(entry.source) }}</span>
-                      <span>{{ formatAttendanceDate(entry.checkedInAt) }}</span>
-                    </div>
+              <div class="pagination-bar">
+                <p>{{ attendancePaginationLabel }}</p>
+                <div class="pagination-actions">
+                  <button
+                    class="panel-chip"
+                    type="button"
+                    :disabled="attendanceCurrentPage === 1"
+                    @click="goToAttendancePage(attendanceCurrentPage - 1)"
+                  >
+                    Precedent
+                  </button>
+                  <div class="pagination-pages">
+                    <button
+                      v-for="page in attendanceVisiblePages"
+                      :key="page"
+                      :class="['pagination-page', page === attendanceCurrentPage && 'is-active']"
+                      type="button"
+                      @click="goToAttendancePage(page)"
+                    >
+                      {{ page }}
+                    </button>
                   </div>
+                  <button
+                    class="panel-chip"
+                    type="button"
+                    :disabled="attendanceCurrentPage === attendanceTotalPages"
+                    @click="goToAttendancePage(attendanceCurrentPage + 1)"
+                  >
+                    Suivant
+                  </button>
                 </div>
-              </section>
+              </div>
             </div>
           </article>
         </section>

@@ -631,7 +631,7 @@ textarea {
 }
 
 .checkin-grid {
-  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .presence-client-grid {
@@ -1106,6 +1106,10 @@ textarea {
 
 .attendance-history-list {
   gap: 12px;
+}
+
+.checkin-panel {
+  width: 100%;
 }
 
 .attendance-day-group {
