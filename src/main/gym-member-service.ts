@@ -14,6 +14,7 @@ import type {
   MembershipSubscriptionRecord,
   MembershipType,
   MembershipTypeInput,
+  PaymentMethod,
   PaymentInput,
   PaymentRecord,
   PaymentCategory,
@@ -76,6 +77,7 @@ type PaymentRow = {
   label: string;
   amount: number;
   category: PaymentCategory;
+  payment_method: PaymentMethod;
   created_at: string;
 };
 
@@ -404,8 +406,8 @@ export class GymMemberService {
       );
 
       const paymentStatement = this.database.prepare(`
-        INSERT INTO payments (label, amount, category)
-        VALUES (@label, @amount, 'stock')
+        INSERT INTO payments (label, amount, category, payment_method)
+        VALUES (@label, @amount, 'stock', 'cash')
       `);
 
       paymentStatement.run({
@@ -430,7 +432,7 @@ export class GymMemberService {
 
   listPayments(): PaymentRecord[] {
     const query = this.database.prepare(`
-      SELECT id, label, amount, category, created_at
+      SELECT id, label, amount, category, payment_method, created_at
       FROM payments
       ORDER BY created_at DESC, id DESC
     `);
@@ -441,8 +443,8 @@ export class GymMemberService {
   createPayment(payment: PaymentInput): PaymentRecord {
     const normalized = this.normalizePayment(payment);
     const statement = this.database.prepare(`
-      INSERT INTO payments (label, amount, category)
-      VALUES (@label, @amount, @category)
+      INSERT INTO payments (label, amount, category, payment_method)
+      VALUES (@label, @amount, @category, @paymentMethod)
     `);
 
     const result = statement.run(normalized);
@@ -509,11 +511,12 @@ export class GymMemberService {
       );
 
       const paymentResult = this.database.prepare(`
-        INSERT INTO payments (label, amount, category)
-        VALUES (@label, @amount, 'membership')
+        INSERT INTO payments (label, amount, category, payment_method)
+        VALUES (@label, @amount, 'membership', @paymentMethod)
       `).run({
         label: `Adhesion ${membershipType.name} - ${member.full_name}`,
         amount: membershipType.price,
+        paymentMethod: normalized.paymentMethod,
       });
 
       const subscriptionResult = this.database.prepare(`
@@ -629,6 +632,7 @@ export class GymMemberService {
         label TEXT NOT NULL,
         amount REAL NOT NULL,
         category TEXT NOT NULL DEFAULT 'membership',
+        payment_method TEXT NOT NULL DEFAULT 'cash',
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
 
@@ -674,6 +678,15 @@ export class GymMemberService {
       this.database.exec(`
         ALTER TABLE stock_items
         ADD COLUMN quantity INTEGER NOT NULL DEFAULT 0;
+      `);
+    }
+
+    const paymentColumns = this.database.prepare('PRAGMA table_info(payments)').all() as Array<{ name: string }>;
+
+    if (!paymentColumns.some((column) => column.name === 'payment_method')) {
+      this.database.exec(`
+        ALTER TABLE payments
+        ADD COLUMN payment_method TEXT NOT NULL DEFAULT 'cash';
       `);
     }
 
@@ -723,11 +736,19 @@ export class GymMemberService {
           created_at,
           updated_at
         FROM gym_members_legacy;
+      `);
 
+      this.repairLegacyGymMemberReferences();
+
+      this.database.exec(`
         DROP TABLE gym_members_legacy;
 
         PRAGMA foreign_keys = ON;
       `);
+    }
+
+    if (this.hasLegacyGymMemberReferences()) {
+      this.repairLegacyGymMemberReferences();
     }
 
     const membershipTypeColumns = this.database.prepare('PRAGMA table_info(membership_types)').all() as Array<{ name: string }>;
@@ -763,6 +784,148 @@ export class GymMemberService {
 
       seedTransaction();
     }
+  }
+
+  private hasLegacyGymMemberReferences(): boolean {
+    return ['attendance_history', 'stock_history', 'membership_subscriptions'].some((tableName) => {
+      const foreignKeys = this.database.prepare(`PRAGMA foreign_key_list(${tableName})`).all() as Array<{ table: string }>;
+      return foreignKeys.some((foreignKey) => foreignKey.table === 'gym_members_legacy');
+    });
+  }
+
+  private repairLegacyGymMemberReferences(): void {
+    this.database.exec(`
+      PRAGMA foreign_keys = OFF;
+
+      DROP INDEX IF EXISTS idx_attendance_history_checked_in_at;
+      ALTER TABLE attendance_history RENAME TO attendance_history_legacy;
+
+      CREATE TABLE attendance_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        member_id INTEGER NOT NULL,
+        member_name TEXT NOT NULL,
+        member_phone TEXT NOT NULL,
+        checked_in_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        source TEXT NOT NULL DEFAULT 'phone-number',
+        action TEXT NOT NULL DEFAULT 'check-in',
+        FOREIGN KEY (member_id) REFERENCES gym_members(id) ON DELETE CASCADE
+      );
+
+      INSERT INTO attendance_history (
+        id,
+        member_id,
+        member_name,
+        member_phone,
+        checked_in_at,
+        source,
+        action
+      )
+      SELECT
+        id,
+        member_id,
+        member_name,
+        member_phone,
+        checked_in_at,
+        source,
+        action
+      FROM attendance_history_legacy;
+
+      DROP TABLE attendance_history_legacy;
+      CREATE INDEX idx_attendance_history_checked_in_at ON attendance_history (checked_in_at DESC);
+
+      DROP INDEX IF EXISTS idx_stock_history_item_created_at;
+      ALTER TABLE stock_history RENAME TO stock_history_legacy;
+
+      CREATE TABLE stock_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        stock_item_id INTEGER NOT NULL,
+        stock_item_name TEXT NOT NULL,
+        action TEXT NOT NULL,
+        quantity INTEGER NOT NULL,
+        unit_price REAL NOT NULL,
+        total_amount REAL NOT NULL,
+        customer_name TEXT NOT NULL DEFAULT '',
+        customer_member_id INTEGER,
+        notes TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (stock_item_id) REFERENCES stock_items(id) ON DELETE CASCADE,
+        FOREIGN KEY (customer_member_id) REFERENCES gym_members(id) ON DELETE SET NULL
+      );
+
+      INSERT INTO stock_history (
+        id,
+        stock_item_id,
+        stock_item_name,
+        action,
+        quantity,
+        unit_price,
+        total_amount,
+        customer_name,
+        customer_member_id,
+        notes,
+        created_at
+      )
+      SELECT
+        id,
+        stock_item_id,
+        stock_item_name,
+        action,
+        quantity,
+        unit_price,
+        total_amount,
+        customer_name,
+        customer_member_id,
+        notes,
+        created_at
+      FROM stock_history_legacy;
+
+      DROP TABLE stock_history_legacy;
+      CREATE INDEX idx_stock_history_item_created_at ON stock_history (stock_item_id, created_at DESC);
+
+      ALTER TABLE membership_subscriptions RENAME TO membership_subscriptions_legacy;
+
+      CREATE TABLE membership_subscriptions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        member_id INTEGER NOT NULL,
+        member_name TEXT NOT NULL,
+        membership_type_id INTEGER NOT NULL,
+        membership_type_name TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ends_at TEXT NOT NULL,
+        payment_id INTEGER,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (member_id) REFERENCES gym_members(id) ON DELETE CASCADE,
+        FOREIGN KEY (membership_type_id) REFERENCES membership_types(id) ON DELETE RESTRICT,
+        FOREIGN KEY (payment_id) REFERENCES payments(id) ON DELETE SET NULL
+      );
+
+      INSERT INTO membership_subscriptions (
+        id,
+        member_id,
+        member_name,
+        membership_type_id,
+        membership_type_name,
+        started_at,
+        ends_at,
+        payment_id,
+        created_at
+      )
+      SELECT
+        id,
+        member_id,
+        member_name,
+        membership_type_id,
+        membership_type_name,
+        started_at,
+        ends_at,
+        payment_id,
+        created_at
+      FROM membership_subscriptions_legacy;
+
+      DROP TABLE membership_subscriptions_legacy;
+
+      PRAGMA foreign_keys = ON;
+    `);
   }
 
   private getMemberById(id: number): GymMember {
@@ -892,7 +1055,7 @@ export class GymMemberService {
 
   private getPaymentById(id: number): PaymentRecord {
     const statement = this.database.prepare(`
-      SELECT id, label, amount, category, created_at
+      SELECT id, label, amount, category, payment_method, created_at
       FROM payments
       WHERE id = ?
     `);
@@ -1076,6 +1239,7 @@ export class GymMemberService {
       label: row.label,
       amount: row.amount,
       category: row.category,
+      paymentMethod: row.payment_method,
       createdAt: row.created_at,
     };
   }
@@ -1235,6 +1399,7 @@ export class GymMemberService {
       label: payment.label.trim(),
       amount: Number(payment.amount),
       category: payment.category,
+      paymentMethod: payment.paymentMethod,
     };
 
     if (!normalized.label || Number.isNaN(normalized.amount) || normalized.amount < 0) {
@@ -1243,6 +1408,10 @@ export class GymMemberService {
 
     if (normalized.category !== 'membership' && normalized.category !== 'stock') {
       throw new Error('Invalid payment category');
+    }
+
+    if (normalized.paymentMethod !== 'cash' && normalized.paymentMethod !== 'mobile-money') {
+      throw new Error('Invalid payment method');
     }
 
     return normalized;
@@ -1276,6 +1445,7 @@ export class GymMemberService {
       memberId: Number(input.memberId),
       membershipTypeId: Number(input.membershipTypeId),
       startedAt: input.startedAt.trim(),
+      paymentMethod: input.paymentMethod,
     };
 
     if (Number.isNaN(normalized.memberId) || normalized.memberId <= 0) {
@@ -1288,6 +1458,10 @@ export class GymMemberService {
 
     if (!normalized.startedAt) {
       throw new Error('Start date is required');
+    }
+
+    if (normalized.paymentMethod !== 'cash' && normalized.paymentMethod !== 'mobile-money') {
+      throw new Error('Invalid payment method');
     }
 
     return normalized;

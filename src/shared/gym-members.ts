@@ -15,6 +15,7 @@ export interface GymMember {
 export type AttendanceSource = 'phone-number' | 'qr-phone' | 'member-id';
 export type AttendanceAction = 'check-in' | 'check-out';
 export type PaymentCategory = 'membership' | 'stock';
+export type PaymentMethod = 'cash' | 'mobile-money';
 export type StockHistoryAction = 'create' | 'restock' | 'sale';
 export type MembershipDurationUnit = 'days' | 'months' | 'years';
 
@@ -73,6 +74,7 @@ export interface PaymentRecord {
   label: string;
   amount: number;
   category: PaymentCategory;
+  paymentMethod: PaymentMethod;
   createdAt: string;
 }
 
@@ -80,6 +82,7 @@ export interface PaymentInput {
   label: string;
   amount: number;
   category: PaymentCategory;
+  paymentMethod: PaymentMethod;
 }
 
 export interface MembershipType {
@@ -114,6 +117,7 @@ export interface MembershipSubscriptionInput {
   memberId: number;
   membershipTypeId: number;
   startedAt: string;
+  paymentMethod: PaymentMethod;
 }
 
 export interface GymMemberInput {

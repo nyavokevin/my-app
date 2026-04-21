@@ -14,6 +14,7 @@ import type {
   MembershipType,
   MembershipTypeInput,
   PaymentCategory,
+  PaymentMethod,
   PaymentRecord,
   StockHistoryRecord,
   StockItem,
@@ -54,8 +55,15 @@ type PaymentFormState = {
   label: string;
   amount: number;
   category: PaymentCategory;
+  paymentMethod: PaymentMethod;
   memberId: number | null;
   membershipTypeId: number | null;
+  startedAt: string;
+};
+
+type RenewalFormState = {
+  membershipTypeId: number | null;
+  paymentMethod: PaymentMethod;
   startedAt: string;
 };
 
@@ -72,6 +80,7 @@ const searchQuery = ref('');
 const submittedSearchQuery = ref('');
 const isMemberModalOpen = ref(false);
 const isMemberDetailsModalOpen = ref(false);
+const isRenewalModalOpen = ref(false);
 const isStockModalOpen = ref(false);
 const isStockDetailsModalOpen = ref(false);
 const isStockSaleModalOpen = ref(false);
@@ -99,6 +108,7 @@ const editingMembershipTypeId = ref<number | null>(null);
 const createWithMembershipPayment = ref(true);
 const selectedSearchMemberId = ref<number | null>(null);
 const selectedStockItemId = ref<number | null>(null);
+const renewalMemberId = ref<number | null>(null);
 const stockSearchQuery = ref('');
 const stockSaleCustomerQuery = ref('');
 const stockHistory = ref<StockHistoryRecord[]>([]);
@@ -166,8 +176,15 @@ const paymentForm = reactive<PaymentFormState>({
   label: '',
   amount: 0,
   category: 'membership',
+  paymentMethod: 'cash',
   memberId: null,
   membershipTypeId: null,
+  startedAt: new Date().toISOString().slice(0, 10),
+});
+
+const renewalForm = reactive<RenewalFormState>({
+  membershipTypeId: null,
+  paymentMethod: 'cash',
   startedAt: new Date().toISOString().slice(0, 10),
 });
 
@@ -240,6 +257,16 @@ const selectedPaymentMembershipType = computed(() => {
 
 const selectedPaymentMember = computed(() => {
   return members.value.find((member) => member.id === paymentForm.memberId) ?? null;
+});
+
+const selectedRenewalMember = computed(() => {
+  return members.value.find((member) => member.id === renewalMemberId.value) ?? null;
+});
+
+const selectedRenewalMembershipType = computed(() => {
+  return normalizeMembershipTypeDetails(
+    membershipTypes.value.find((membershipType) => membershipType.id === renewalForm.membershipTypeId) ?? null,
+  );
 });
 
 const membershipTypeFormTitle = computed(() => {
@@ -730,6 +757,24 @@ const openMemberDetails = (member: GymMember) => {
   isMemberDetailsModalOpen.value = true;
 };
 
+const resetRenewalForm = () => {
+  renewalForm.membershipTypeId = membershipTypes.value[0]?.id ?? null;
+  renewalForm.paymentMethod = 'cash';
+  renewalForm.startedAt = new Date().toISOString().slice(0, 10);
+};
+
+const openRenewalModal = (member: GymMember) => {
+  renewalMemberId.value = member.id;
+  resetRenewalForm();
+  isRenewalModalOpen.value = true;
+};
+
+const closeRenewalModal = () => {
+  isRenewalModalOpen.value = false;
+  renewalMemberId.value = null;
+  resetRenewalForm();
+};
+
 const closeMemberDetails = () => {
   isMemberDetailsModalOpen.value = false;
   selectedSearchMemberId.value = null;
@@ -832,6 +877,7 @@ const saveMember = async () => {
             memberId: created.id,
             membershipTypeId: membershipType.id,
             startedAt: created.joinedAt,
+            paymentMethod: 'cash',
           });
 
           await Promise.all([loadMembers(), loadPayments()]);
@@ -1086,6 +1132,7 @@ const savePayment = async () => {
         memberId: Number(paymentForm.memberId),
         membershipTypeId: Number(paymentForm.membershipTypeId),
         startedAt: paymentForm.startedAt,
+        paymentMethod: paymentForm.paymentMethod,
       };
 
       await memberApi.createMembershipSubscription(membershipInput);
@@ -1095,6 +1142,7 @@ const savePayment = async () => {
         label: paymentForm.label,
         amount: Number(paymentForm.amount),
         category: paymentForm.category,
+        paymentMethod: paymentForm.paymentMethod,
       });
       payments.value = [created, ...payments.value];
     }
@@ -1102,11 +1150,37 @@ const savePayment = async () => {
     paymentForm.label = '';
     paymentForm.amount = 0;
     paymentForm.category = 'membership';
+    paymentForm.paymentMethod = 'cash';
     paymentForm.memberId = members.value[0]?.id ?? null;
     paymentForm.membershipTypeId = membershipTypes.value[0]?.id ?? null;
     paymentForm.startedAt = new Date().toISOString().slice(0, 10);
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : 'Impossible d enregistrer le paiement.';
+  } finally {
+    isPaymentSaving.value = false;
+  }
+};
+
+const saveRenewal = async () => {
+  if (selectedRenewalMember.value === null) {
+    return;
+  }
+
+  isPaymentSaving.value = true;
+  errorMessage.value = '';
+
+  try {
+    await memberApi.createMembershipSubscription({
+      memberId: selectedRenewalMember.value.id,
+      membershipTypeId: Number(renewalForm.membershipTypeId),
+      startedAt: renewalForm.startedAt,
+      paymentMethod: renewalForm.paymentMethod,
+    });
+
+    await Promise.all([loadMembers(), loadPayments()]);
+    closeRenewalModal();
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : 'Impossible d enregistrer ce reabonnement.';
   } finally {
     isPaymentSaving.value = false;
   }
@@ -1319,6 +1393,7 @@ watch(() => paymentForm.category, (category) => {
     paymentForm.memberId = paymentForm.memberId ?? members.value[0]?.id ?? null;
     paymentForm.membershipTypeId = paymentForm.membershipTypeId ?? membershipTypes.value[0]?.id ?? null;
     paymentForm.amount = selectedPaymentMembershipType.value?.price ?? 0;
+    paymentForm.paymentMethod = paymentForm.paymentMethod ?? 'cash';
     return;
   }
 
@@ -1355,6 +1430,12 @@ watch(members, (value) => {
 
   if (paymentForm.memberId === null || !value.some((member) => member.id === paymentForm.memberId)) {
     paymentForm.memberId = value[0]?.id ?? null;
+  }
+}, { immediate: true });
+
+watch(membershipTypes, (value) => {
+  if (renewalForm.membershipTypeId === null || !value.some((membershipType) => membershipType.id === renewalForm.membershipTypeId)) {
+    renewalForm.membershipTypeId = value[0]?.id ?? null;
   }
 }, { immediate: true });
 
@@ -1414,6 +1495,10 @@ const formatAttendanceAction = (action: AttendanceAction) => {
 
 const formatPaymentCategory = (category: PaymentCategory) => {
   return category === 'membership' ? 'Adhesion' : 'Stock';
+};
+
+const formatPaymentMethod = (paymentMethod: PaymentMethod) => {
+  return paymentMethod === 'mobile-money' ? 'Mobile money' : 'Espece';
 };
 
 const formatMembershipDuration = (durationCount?: number | null, durationUnit?: MembershipDurationUnit | null) => {
@@ -1681,20 +1766,7 @@ onMounted(async () => {
       </template>
 
       <template v-else-if="currentView === 'search'">
-        <section class="membership-overview">
-          <article class="overview-card">
-            <span>Recherche</span>
-            <strong>{{ submittedSearchQuery || 'Aucune recherche' }}</strong>
-          </article>
-          <article class="overview-card">
-            <span>Resultats</span>
-            <strong>{{ submittedSearchResults.length }}</strong>
-          </article>
-          <article class="overview-card">
-            <span>Details disponibles</span>
-            <strong>{{ submittedSearchResults.length === 0 ? 'Non' : 'Oui' }}</strong>
-          </article>
-        </section>
+        
 
         <section class="panel search-results-panel">
           <div class="panel-header">
@@ -1720,7 +1792,6 @@ onMounted(async () => {
           <template v-else>
             <div class="panel-header search-results-header">
               <div>
-                <h2>Search results</h2>
                 <h2>Resultats de recherche</h2>
                 <p>
                   {{ submittedSearchResults.length }} membre{{ submittedSearchResults.length === 1 ? '' : 's' }} trouve{{ submittedSearchResults.length === 1 ? '' : 's' }} pour "{{ submittedSearchQuery }}"
@@ -1824,6 +1895,7 @@ onMounted(async () => {
                 <p v-if="member.notes" class="membership-notes">{{ member.notes }}</p>
 
                 <div class="membership-actions">
+                  <button class="primary-button" type="button" @click="openRenewalModal(member)">Reabonner</button>
                   <button class="panel-chip" type="button" @click="startEditing(member)">Modifier</button>
                   <button class="danger-button" type="button" @click="removeMember(member.id)">Supprimer</button>
                 </div>
@@ -2118,6 +2190,14 @@ onMounted(async () => {
                 </select>
               </label>
 
+              <label>
+                <span>Mode de paiement</span>
+                <select v-model="paymentForm.paymentMethod">
+                  <option value="cash">Espece</option>
+                  <option value="mobile-money">Mobile money</option>
+                </select>
+              </label>
+
               <template v-if="paymentForm.category === 'membership'">
                 <label>
                   <span>Membre</span>
@@ -2149,7 +2229,7 @@ onMounted(async () => {
                   <span>
                     {{
                       selectedPaymentMembershipType && selectedPaymentMember
-                        ? `${selectedPaymentMember.fullName} sera facture ${formatCurrency(selectedPaymentMembershipType.price)} pour ${formatMembershipDuration(selectedPaymentMembershipType.durationCount, selectedPaymentMembershipType.durationUnit)}.`
+                        ? `${selectedPaymentMember.fullName} sera facture ${formatCurrency(selectedPaymentMembershipType.price)} pour ${formatMembershipDuration(selectedPaymentMembershipType.durationCount, selectedPaymentMembershipType.durationUnit)} en ${formatPaymentMethod(paymentForm.paymentMethod)}.`
                         : 'Selectionnez un membre et une formule pour generer automatiquement le paiement et la date de fin.'
                     }}
                   </span>
@@ -2177,7 +2257,7 @@ onMounted(async () => {
               <div v-for="payment in payments" :key="payment.id" class="inventory-row">
                 <div class="inventory-copy">
                   <strong>{{ payment.label }}</strong>
-                  <span>{{ formatPaymentCategory(payment.category) }} · {{ formatAttendanceDate(payment.createdAt) }}</span>
+                  <span>{{ formatPaymentCategory(payment.category) }} · {{ formatPaymentMethod(payment.paymentMethod) }} · {{ formatAttendanceDate(payment.createdAt) }}</span>
                 </div>
                 <div class="inventory-meta">
                   <strong>{{ formatCurrency(payment.amount) }}</strong>
@@ -2209,7 +2289,7 @@ onMounted(async () => {
 
         <section class="content-grid stock-grid">
           <article class="panel stock-form-panel">
-            <div class="panel-header">
++            <div class="panel-header">
               <div>
                 <h2>{{ membershipTypeFormTitle }}</h2>
                 <p>Enregistrez les noms et prix des formules utilises dans le tableau de bord et le formulaire membre</p>
@@ -2692,7 +2772,10 @@ onMounted(async () => {
             <h2>{{ selectedSearchMember.fullName }}</h2>
             <p>Adhesion, historique des paiements et historique des presences</p>
           </div>
-          <button class="circle-button modal-close" type="button" @click="closeMemberDetails">X</button>
+          <div class="panel-actions">
+            <button class="primary-button" type="button" @click="openRenewalModal(selectedSearchMember)">Reabonner</button>
+            <button class="circle-button modal-close" type="button" @click="closeMemberDetails">X</button>
+          </div>
         </div>
 
         <section class="member-details-grid">
@@ -2731,7 +2814,7 @@ onMounted(async () => {
             <div v-for="payment in selectedMemberPaymentHistory" :key="payment.id" class="inventory-row">
               <div class="inventory-copy">
                 <strong>{{ payment.label }}</strong>
-                <span>{{ formatAttendanceDate(payment.createdAt) }}</span>
+                <span>{{ formatPaymentMethod(payment.paymentMethod) }} · {{ formatAttendanceDate(payment.createdAt) }}</span>
               </div>
               <div class="inventory-meta">
                 <strong>{{ formatCurrency(payment.amount) }}</strong>
@@ -2764,6 +2847,61 @@ onMounted(async () => {
             </div>
           </div>
         </section>
+      </article>
+    </div>
+
+    <div v-if="isRenewalModalOpen && selectedRenewalMember" class="modal-backdrop" @click.self="closeRenewalModal">
+      <article class="modal-card">
+        <div class="panel-header modal-header">
+          <div>
+            <h2>Reabonnement</h2>
+            <p>{{ selectedRenewalMember.fullName }} · choisissez la formule et le mode de paiement</p>
+          </div>
+          <button class="circle-button modal-close" type="button" @click="closeRenewalModal">X</button>
+        </div>
+
+        <form class="editor-form" @submit.prevent="saveRenewal">
+          <label>
+            <span>Type d adhesion</span>
+            <select v-model.number="renewalForm.membershipTypeId" required>
+              <option :value="null" disabled>Selectionner une formule</option>
+              <option v-for="membershipType in membershipTypes" :key="membershipType.id" :value="membershipType.id">
+                {{ membershipType.name }}
+              </option>
+            </select>
+          </label>
+
+          <label>
+            <span>Date de debut</span>
+            <input v-model="renewalForm.startedAt" required type="date" />
+          </label>
+
+          <label>
+            <span>Mode de paiement</span>
+            <select v-model="renewalForm.paymentMethod">
+              <option value="cash">Espece</option>
+              <option value="mobile-money">Mobile money</option>
+            </select>
+          </label>
+
+          <div class="form-hint-card">
+            <strong>{{ selectedRenewalMembershipType?.name ?? 'Type d adhesion requis' }}</strong>
+            <span>
+              {{
+                selectedRenewalMembershipType
+                  ? `${selectedRenewalMember.fullName} sera reabonne pour ${formatCurrency(selectedRenewalMembershipType.price)} sur ${formatMembershipDuration(selectedRenewalMembershipType.durationCount, selectedRenewalMembershipType.durationUnit)} en ${formatPaymentMethod(renewalForm.paymentMethod)}.`
+                  : 'Choisissez une formule avant de valider le reabonnement.'
+              }}
+            </span>
+          </div>
+
+          <div class="modal-footer">
+            <button class="panel-chip" type="button" @click="closeRenewalModal">Annuler</button>
+            <button class="primary-button" :disabled="isPaymentSaving" type="submit">
+              {{ isPaymentSaving ? 'Enregistrement...' : 'Valider le reabonnement' }}
+            </button>
+          </div>
+        </form>
       </article>
     </div>
   </div>
