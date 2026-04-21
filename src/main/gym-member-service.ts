@@ -4,6 +4,8 @@ import path from 'node:path';
 import { app } from 'electron';
 
 import type {
+  AppSettings,
+  AppSettingsInput,
   AttendanceAction,
   AttendanceRecord,
   AttendanceSource,
@@ -102,6 +104,11 @@ type MembershipSubscriptionRow = {
   created_at: string;
 };
 
+type AppSettingRow = {
+  setting_key: string;
+  setting_value: string;
+};
+
 export class GymMemberService {
   private database: Database.Database;
 
@@ -116,6 +123,7 @@ export class GymMemberService {
     this.database.pragma('foreign_keys = ON');
 
     this.createSchema();
+    this.seedDemoDataIfNeeded();
   }
 
   listMembers(): GymMember[] {
@@ -562,6 +570,59 @@ export class GymMemberService {
     return transaction();
   }
 
+  getAppSettings(): AppSettings {
+    const statement = this.database.prepare(`
+      SELECT setting_key, setting_value
+      FROM app_settings
+      WHERE setting_key = 'currency_code'
+    `);
+
+    const row = statement.get() as AppSettingRow | undefined;
+
+    return {
+      currencyCode: row?.setting_value ?? 'MGA',
+    };
+  }
+
+  updateAppSettings(settings: AppSettingsInput): AppSettings {
+    const normalized = this.normalizeAppSettings(settings);
+
+    this.database.prepare(`
+      INSERT INTO app_settings (setting_key, setting_value)
+      VALUES ('currency_code', @currencyCode)
+      ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value
+    `).run(normalized);
+
+    return this.getAppSettings();
+  }
+
+  seedDemoData(): void {
+    this.ensureDefaultAppSettings();
+    this.ensureDefaultMembershipTypes();
+    this.seedDemoDataInternal();
+  }
+
+  resetAppData(): void {
+    const transaction = this.database.transaction(() => {
+      this.database.exec(`
+        DELETE FROM attendance_history;
+        DELETE FROM stock_history;
+        DELETE FROM membership_subscriptions;
+        DELETE FROM payments;
+        DELETE FROM stock_items;
+        DELETE FROM gym_members;
+        DELETE FROM membership_types;
+        DELETE FROM app_settings;
+        DELETE FROM sqlite_sequence;
+      `);
+
+      this.ensureDefaultAppSettings();
+      this.ensureDefaultMembershipTypes();
+    });
+
+    transaction();
+  }
+
   deleteMembershipType(id: number): void {
     const statement = this.database.prepare('DELETE FROM membership_types WHERE id = ?');
     const result = statement.run(id);
@@ -658,6 +719,11 @@ export class GymMemberService {
         ,FOREIGN KEY (member_id) REFERENCES gym_members(id) ON DELETE CASCADE
         ,FOREIGN KEY (membership_type_id) REFERENCES membership_types(id) ON DELETE RESTRICT
         ,FOREIGN KEY (payment_id) REFERENCES payments(id) ON DELETE SET NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS app_settings (
+        setting_key TEXT PRIMARY KEY,
+        setting_value TEXT NOT NULL
       );
     `);
 
@@ -767,23 +833,262 @@ export class GymMemberService {
       `);
     }
 
-    const membershipTypeCount = this.database.prepare('SELECT COUNT(*) as total FROM membership_types').get() as { total: number };
+    this.ensureDefaultAppSettings();
+    this.ensureDefaultMembershipTypes();
+  }
 
-    if (membershipTypeCount.total === 0) {
-      const seedStatement = this.database.prepare(`
-        INSERT INTO membership_types (name, price, duration_count, duration_unit)
-        VALUES (?, ?, ?, ?)
+  private seedDemoDataIfNeeded(): void {
+    const counts = {
+      members: (this.database.prepare('SELECT COUNT(*) as total FROM gym_members').get() as { total: number }).total,
+      subscriptions: (this.database.prepare('SELECT COUNT(*) as total FROM membership_subscriptions').get() as { total: number }).total,
+      attendance: (this.database.prepare('SELECT COUNT(*) as total FROM attendance_history').get() as { total: number }).total,
+      stock: (this.database.prepare('SELECT COUNT(*) as total FROM stock_items').get() as { total: number }).total,
+      payments: (this.database.prepare('SELECT COUNT(*) as total FROM payments').get() as { total: number }).total,
+    };
+
+    if (Object.values(counts).some((total) => total > 0)) {
+      return;
+    }
+
+    this.seedDemoData();
+  }
+
+  private ensureDefaultAppSettings(): void {
+    const settingsStatement = this.database.prepare(`
+      INSERT INTO app_settings (setting_key, setting_value)
+      VALUES ('currency_code', 'MGA')
+      ON CONFLICT(setting_key) DO NOTHING
+    `);
+
+    settingsStatement.run();
+  }
+
+  private ensureDefaultMembershipTypes(): void {
+    const seedStatement = this.database.prepare(`
+      INSERT INTO membership_types (name, price, duration_count, duration_unit)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(name) DO NOTHING
+    `);
+
+    const seedTransaction = this.database.transaction(() => {
+      seedStatement.run('Monthly', 39, 1, 'months');
+      seedStatement.run('Quarterly', 59, 3, 'months');
+      seedStatement.run('Annual', 75, 1, 'years');
+      seedStatement.run('Premium', 89, 1, 'months');
+    });
+
+    seedTransaction();
+  }
+
+  private seedDemoDataInternal(): void {
+    const transaction = this.database.transaction(() => {
+      const membershipTypeByName = new Map(
+        this.listMembershipTypes().map((membershipType) => [membershipType.name, membershipType]),
+      );
+
+      const requiredMembershipTypes = ['Monthly', 'Quarterly', 'Annual', 'Premium'];
+
+      if (requiredMembershipTypes.some((name) => !membershipTypeByName.has(name))) {
+        return;
+      }
+
+      const today = new Date();
+      const demoMembers = [
+        {
+          fullName: 'Aina Rakoto',
+          email: 'aina.rakoto@example.com',
+          phone: '0341100001',
+          membershipType: 'Monthly',
+          joinedAt: this.formatSeedDate(this.shiftSeedDate(today, { days: -75 })),
+          notes: 'Seeder demo: abonnement normal encore actif.',
+          active: true,
+          subscriptionStartedAt: this.formatSeedDate(this.shiftSeedDate(today, { days: -10 })),
+          paymentMethod: 'cash' as const,
+        },
+        {
+          fullName: 'Miora Rabe',
+          email: 'miora.rabe@example.com',
+          phone: '0341100002',
+          membershipType: 'Monthly',
+          joinedAt: this.formatSeedDate(this.shiftSeedDate(today, { days: -120 })),
+          notes: 'Seeder demo: abonnement en retard pour tester les alertes rouges.',
+          active: true,
+          subscriptionStartedAt: this.formatSeedDate(this.shiftSeedDate(today, { days: -33 })),
+          paymentMethod: 'mobile-money' as const,
+        },
+        {
+          fullName: 'Toky Randria',
+          email: 'toky.randria@example.com',
+          phone: '0341100003',
+          membershipType: 'Monthly',
+          joinedAt: this.formatSeedDate(this.shiftSeedDate(today, { days: -31 })),
+          notes: 'Seeder demo: abonnement qui finit aujourd hui.',
+          active: true,
+          subscriptionStartedAt: this.formatSeedDate(this.shiftSeedDate(today, { months: -1 })),
+          paymentMethod: 'cash' as const,
+        },
+        {
+          fullName: 'Fanja Razafindrabe',
+          email: 'fanja.razafindrabe@example.com',
+          phone: '0341100004',
+          membershipType: 'Quarterly',
+          joinedAt: this.formatSeedDate(this.shiftSeedDate(today, { days: -180 })),
+          notes: 'Seeder demo: abonnement bientot expire pour tester les alertes jaunes.',
+          active: true,
+          subscriptionStartedAt: this.formatSeedDate(this.shiftSeedDate(today, { months: -3, days: 5 })),
+          paymentMethod: 'mobile-money' as const,
+        },
+        {
+          fullName: 'Hery Andriamanga',
+          email: 'hery.andriamanga@example.com',
+          phone: '0341100005',
+          membershipType: 'Annual',
+          joinedAt: this.formatSeedDate(this.shiftSeedDate(today, { days: -240 })),
+          notes: 'Seeder demo: abonnement longue duree normal.',
+          active: true,
+          subscriptionStartedAt: this.formatSeedDate(this.shiftSeedDate(today, { months: -2 })),
+          paymentMethod: 'cash' as const,
+        },
+        {
+          fullName: 'Soa Irina',
+          email: null,
+          phone: '0341100006',
+          membershipType: 'Premium',
+          joinedAt: this.formatSeedDate(this.shiftSeedDate(today, { days: -90 })),
+          notes: 'Seeder demo: profil inactif avec abonnement deja termine.',
+          active: false,
+          subscriptionStartedAt: this.formatSeedDate(this.shiftSeedDate(today, { days: -45 })),
+          paymentMethod: 'cash' as const,
+        },
+      ];
+
+      const existingMembers = this.database.prepare(`
+        SELECT id, full_name, email, phone, membership_type, joined_at, notes, active
+        FROM gym_members
+      `).all() as GymMemberRow[];
+
+      const memberByPhone = new Map(existingMembers.map((member) => [this.normalizePhone(member.phone), member]));
+      const attendanceExistsStatement = this.database.prepare(`
+        SELECT id
+        FROM attendance_history
+        WHERE member_id = ? AND action = ?
+        LIMIT 1
+      `);
+      const stockHistoryExistsStatement = this.database.prepare(`
+        SELECT id
+        FROM stock_history
+        WHERE notes = ?
+        LIMIT 1
       `);
 
-      const seedTransaction = this.database.transaction(() => {
-        seedStatement.run('Monthly', 39, 1, 'months');
-        seedStatement.run('Quarterly', 59, 3, 'months');
-        seedStatement.run('Annual', 75, 1, 'years');
-        seedStatement.run('Premium', 89, 1, 'months');
+      const seededMembers = demoMembers.map((member) => {
+        const normalizedPhone = this.normalizePhone(member.phone);
+        const existingMember = memberByPhone.get(normalizedPhone);
+
+        if (existingMember) {
+          const membershipType = membershipTypeByName.get(member.membershipType);
+
+          if (!membershipType) {
+            throw new Error(`Missing demo membership type: ${member.membershipType}`);
+          }
+
+          const hasSubscription = this.database.prepare(`
+            SELECT id
+            FROM membership_subscriptions
+            WHERE member_id = ?
+            LIMIT 1
+          `).get(existingMember.id);
+
+          if (!hasSubscription) {
+            this.createMembershipSubscription({
+              memberId: existingMember.id,
+              membershipTypeId: membershipType.id,
+              startedAt: member.subscriptionStartedAt,
+              paymentMethod: member.paymentMethod,
+            });
+          }
+
+          return this.getMemberById(existingMember.id);
+        }
+
+        const createdMember = this.createMember({
+          fullName: member.fullName,
+          email: member.email,
+          phone: member.phone,
+          membershipType: member.membershipType,
+          joinedAt: member.joinedAt,
+          notes: member.notes,
+          active: member.active,
+        });
+
+        const membershipType = membershipTypeByName.get(member.membershipType);
+
+        if (!membershipType) {
+          throw new Error(`Missing demo membership type: ${member.membershipType}`);
+        }
+
+        this.createMembershipSubscription({
+          memberId: createdMember.id,
+          membershipTypeId: membershipType.id,
+          startedAt: member.subscriptionStartedAt,
+          paymentMethod: member.paymentMethod,
+        });
+
+        return createdMember;
       });
 
-      seedTransaction();
-    }
+      const memberByName = new Map(seededMembers.map((member) => [member.fullName, member]));
+      const aina = memberByName.get('Aina Rakoto');
+      const toky = memberByName.get('Toky Randria');
+      const fanja = memberByName.get('Fanja Razafindrabe');
+
+      if (aina && !attendanceExistsStatement.get(aina.id, 'check-in')) {
+        this.createAttendanceRecord(this.getMemberRowById(aina.id), 'member-id', 'check-in');
+      }
+
+      if (toky && !attendanceExistsStatement.get(toky.id, 'check-in')) {
+        this.createAttendanceRecord(this.getMemberRowById(toky.id), 'member-id', 'check-in');
+      }
+
+      if (toky && !attendanceExistsStatement.get(toky.id, 'check-out')) {
+        this.createAttendanceRecord(this.getMemberRowById(toky.id), 'member-id', 'check-out');
+      }
+
+      if (fanja && !attendanceExistsStatement.get(fanja.id, 'check-in')) {
+        this.createAttendanceRecord(this.getMemberRowById(fanja.id), 'member-id', 'check-in');
+      }
+
+      const stockItemsByName = new Map(this.listStockItems().map((item) => [item.name, item]));
+      const wheyProtein = stockItemsByName.get('Whey Protein 1kg') ?? this.createStockItem({
+        name: 'Whey Protein 1kg',
+        price: 120000,
+        quantity: 8,
+      });
+
+      const bottledWater = stockItemsByName.get('Eau minerale 50cl') ?? this.createStockItem({
+        name: 'Eau minerale 50cl',
+        price: 1500,
+        quantity: 36,
+      });
+
+      if (!stockHistoryExistsStatement.get('Seeder demo: rechargement initial comptoir')) {
+        this.restockStockItem(bottledWater.id, {
+          quantity: 12,
+          notes: 'Seeder demo: rechargement initial comptoir',
+        });
+      }
+
+      if (aina && !stockHistoryExistsStatement.get('Seeder demo: vente exemple a un membre')) {
+        this.sellStockItem(wheyProtein.id, {
+          quantity: 1,
+          customerName: '',
+          customerMemberId: aina.id,
+          notes: 'Seeder demo: vente exemple a un membre',
+        });
+      }
+    });
+
+    transaction();
   }
 
   private hasLegacyGymMemberReferences(): boolean {
@@ -1467,6 +1772,18 @@ export class GymMemberService {
     return normalized;
   }
 
+  private normalizeAppSettings(settings: AppSettingsInput): AppSettingsInput {
+    const normalized = {
+      currencyCode: settings.currencyCode.trim().toUpperCase(),
+    };
+
+    if (!/^[A-Z]{3}$/.test(normalized.currencyCode)) {
+      throw new Error('Invalid currency code');
+    }
+
+    return normalized;
+  }
+
   private calculateMembershipEndDate(startedAt: string, durationCount: number, durationUnit: MembershipDurationUnit): string {
     const date = new Date(startedAt.includes('T') ? startedAt : `${startedAt}T00:00:00`);
 
@@ -1483,6 +1800,31 @@ export class GymMemberService {
     }
 
     return date.toISOString().slice(0, 10);
+  }
+
+  private shiftSeedDate(baseDate: Date, offset: { days?: number; months?: number; years?: number }): Date {
+    const date = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate());
+
+    if (offset.days) {
+      date.setDate(date.getDate() + offset.days);
+    }
+
+    if (offset.months) {
+      date.setMonth(date.getMonth() + offset.months);
+    }
+
+    if (offset.years) {
+      date.setFullYear(date.getFullYear() + offset.years);
+    }
+
+    return date;
+  }
+
+  private formatSeedDate(date: Date): string {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 
   private normalizePhone(phone: string): string {

@@ -292,6 +292,7 @@ textarea {
 .checkin-form input,
 .editor-form input,
 .editor-form select,
+.select-input,
 .editor-form textarea {
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(30, 30, 39, 0.96);
@@ -302,7 +303,8 @@ textarea {
   transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 
-.editor-form select {
+.editor-form select,
+.select-input {
   appearance: none;
   -webkit-appearance: none;
   -moz-appearance: none;
@@ -317,11 +319,13 @@ textarea {
   background-repeat: no-repeat;
 }
 
-.editor-form select:hover {
+.editor-form select:hover,
+.select-input:hover {
   border-color: rgba(255, 255, 255, 0.14);
 }
 
-.editor-form select option {
+.editor-form select option,
+.select-input option {
   background: #1d1d26;
   color: #f8fafc;
 }
@@ -334,6 +338,7 @@ textarea {
 .checkin-form input:focus,
 .editor-form input:focus,
 .editor-form select:focus,
+.select-input:focus,
 .editor-form textarea:focus {
   border-color: rgba(236, 72, 153, 0.5);
   box-shadow: 0 0 0 4px rgba(236, 72, 153, 0.08);
@@ -963,6 +968,25 @@ textarea {
   padding: 18px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.05);
+  display: flex;
+  flex-direction: column;
+}
+
+.membership-toolbar {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.membership-toolbar label {
+  display: grid;
+  gap: 8px;
+}
+
+.membership-toolbar span {
+  color: #99a0b3;
+  font-size: 0.88rem;
 }
 
 .membership-card-top {
@@ -996,7 +1020,10 @@ textarea {
 .membership-actions {
   display: flex;
   gap: 10px;
-  margin-top: 18px;
+  margin-top: auto;
+  padding-top: 18px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 .checkin-form,
@@ -1508,6 +1535,7 @@ textarea {
   .lower-grid,
   .memberships-grid,
   .snapshot-grid,
+  .membership-toolbar,
   .field-row,
   .membership-meta {
     grid-template-columns: 1fr;

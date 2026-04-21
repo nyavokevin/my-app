@@ -4,6 +4,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue';
 
 import { memberApi } from './renderer/member-api';
 import type {
+  AppSettings,
   AttendanceAction,
   AttendanceRecord,
   AttendanceSource,
@@ -76,6 +77,8 @@ type RenewalFormState = {
   startedAt: string;
 };
 
+type MembershipSortOrder = 'end-asc' | 'end-desc';
+
 const isPresenceClientWindow = new URLSearchParams(window.location.search).get('view') === 'presence-client';
 
 const members = ref<GymMember[]>([]);
@@ -107,12 +110,15 @@ const selectedAttendanceAction = ref<AttendanceAction>('check-in');
 const stockItems = ref<StockItem[]>([]);
 const payments = ref<PaymentRecord[]>([]);
 const membershipTypes = ref<MembershipType[]>([]);
+const appSettings = ref<AppSettings>({ currencyCode: 'MGA' });
 const isStockLoading = ref(true);
 const isPaymentLoading = ref(true);
 const isMembershipTypeLoading = ref(true);
 const isStockSaving = ref(false);
 const isPaymentSaving = ref(false);
 const isMembershipTypeSaving = ref(false);
+const isSettingsSaving = ref(false);
+const isDataToolsRunning = ref(false);
 const editingStockId = ref<number | null>(null);
 const editingMembershipTypeId = ref<number | null>(null);
 const createWithMembershipPayment = ref(true);
@@ -124,6 +130,8 @@ const stockSaleCustomerQuery = ref('');
 const stockHistory = ref<StockHistoryRecord[]>([]);
 const isStockHistoryLoading = ref(false);
 const presenceMembershipAlert = ref<PresenceMembershipAlert | null>(null);
+const membershipTypeFilter = ref('all');
+const membershipSortOrder = ref<MembershipSortOrder>('end-asc');
 
 const paymentCategoryOptions: PaymentCategory[] = ['membership', 'stock'];
 const navItems: NavItem[] = [
@@ -205,6 +213,17 @@ const membershipTypeForm = reactive<MembershipTypeInput>({
   durationCount: 1,
   durationUnit: 'months',
 });
+
+const settingsForm = reactive<AppSettings>({
+  currencyCode: 'MGA',
+});
+
+const currencyOptions = [
+  { code: 'MGA', label: 'Ariary malgache' },
+  { code: 'EUR', label: 'Euro' },
+  { code: 'USD', label: 'Dollar americain' },
+  { code: 'XOF', label: 'Franc CFA BCEAO' },
+];
 
 const normalizeDurationUnit = (durationUnit?: MembershipDurationUnit | null): MembershipDurationUnit => {
   if (durationUnit === 'days' || durationUnit === 'years' || durationUnit === 'months') {
@@ -369,8 +388,48 @@ const formatMemberEmail = (email: string | null) => {
   return email && email.trim() ? email : 'Sans email';
 };
 
+const membershipTypeFilterOptions = computed(() => {
+  return [...new Set([
+    ...membershipTypes.value.map((membershipType) => membershipType.name),
+    ...members.value.map((member) => member.membershipType),
+  ])].sort((left, right) => left.localeCompare(right, 'fr'));
+});
+
+const membershipEndTimestamp = (membershipEndsAt: string | null) => {
+  if (!membershipEndsAt) {
+    return null;
+  }
+
+  const parsedDate = new Date(`${membershipEndsAt}T00:00:00`);
+  return Number.isNaN(parsedDate.getTime()) ? null : parsedDate.getTime();
+};
+
 const filteredMembers = computed(() => {
-  return members.value.filter((member) => memberMatchesQuery(member, searchQuery.value));
+  return [...members.value]
+    .filter((member) => {
+      const matchesSearch = memberMatchesQuery(member, searchQuery.value);
+      const matchesType = membershipTypeFilter.value === 'all' || member.membershipType === membershipTypeFilter.value;
+      return matchesSearch && matchesType;
+    })
+    .sort((left, right) => {
+      const leftEnd = membershipEndTimestamp(left.membershipEndsAt);
+      const rightEnd = membershipEndTimestamp(right.membershipEndsAt);
+
+      if (leftEnd === null && rightEnd === null) {
+        return left.fullName.localeCompare(right.fullName, 'fr');
+      }
+
+      if (leftEnd === null) {
+        return 1;
+      }
+
+      if (rightEnd === null) {
+        return -1;
+      }
+
+      const difference = membershipSortOrder.value === 'end-desc' ? rightEnd - leftEnd : leftEnd - rightEnd;
+      return difference !== 0 ? difference : left.fullName.localeCompare(right.fullName, 'fr');
+    });
 });
 
 const submittedSearchResults = computed(() => {
@@ -862,6 +921,27 @@ const loadMembershipTypes = async () => {
   }
 };
 
+const loadAppSettings = async () => {
+  try {
+    const settings = await memberApi.getAppSettings();
+    appSettings.value = settings;
+    settingsForm.currencyCode = settings.currencyCode;
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : 'Impossible de charger la devise.';
+  }
+};
+
+const reloadAppData = async () => {
+  await Promise.all([
+    loadMembers(),
+    loadAttendanceHistory(),
+    loadStockItems(),
+    loadPayments(),
+    loadMembershipTypes(),
+    loadAppSettings(),
+  ]);
+};
+
 const startEditing = (member: GymMember) => {
   currentView.value = 'memberships';
   editingMemberId.value = member.id;
@@ -1283,6 +1363,64 @@ const removePayment = async (paymentId: number) => {
   }
 };
 
+const saveAppSettings = async () => {
+  isSettingsSaving.value = true;
+  errorMessage.value = '';
+
+  try {
+    const settings = await memberApi.updateAppSettings({
+      currencyCode: settingsForm.currencyCode,
+    });
+
+    appSettings.value = settings;
+    settingsForm.currencyCode = settings.currencyCode;
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : 'Impossible d enregistrer la devise.';
+  } finally {
+    isSettingsSaving.value = false;
+  }
+};
+
+const seedDemoData = async () => {
+  if (!window.confirm('Ajouter les donnees demo sans supprimer les donnees actuelles ?')) {
+    return;
+  }
+
+  isDataToolsRunning.value = true;
+  errorMessage.value = '';
+
+  try {
+    await memberApi.seedDemoData();
+    await reloadAppData();
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : 'Impossible d ajouter les donnees demo.';
+  } finally {
+    isDataToolsRunning.value = false;
+  }
+};
+
+const resetAppData = async () => {
+  if (!window.confirm('Supprimer toutes les donnees locales et reinitialiser l application ?')) {
+    return;
+  }
+
+  isDataToolsRunning.value = true;
+  errorMessage.value = '';
+
+  try {
+    await memberApi.resetAppData();
+    currentPage.value = 1;
+    stockCurrentPage.value = 1;
+    selectedSearchMemberId.value = null;
+    selectedStockItemId.value = null;
+    await reloadAppData();
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : 'Impossible de reinitialiser les donnees.';
+  } finally {
+    isDataToolsRunning.value = false;
+  }
+};
+
 const submitPhoneCheckIn = async (
   phone = checkInPhone.value,
   source: AttendanceSource = 'phone-number',
@@ -1320,6 +1458,7 @@ const submitPhoneCheckIn = async (
     }
 
     attendanceHistory.value = [attendance, ...attendanceHistory.value];
+    openPresenceMembershipAlert(attendance.memberId);
     checkInPhone.value = '';
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : `Impossible d enregistrer ${action === 'check-in' ? 'l entree' : 'la sortie'} de ce membre.`;
@@ -1388,7 +1527,7 @@ const goToStockPage = (page: number) => {
   stockCurrentPage.value = Math.min(Math.max(page, 1), stockTotalPages.value);
 };
 
-watch(searchQuery, () => {
+watch([searchQuery, membershipTypeFilter, membershipSortOrder], () => {
   currentPage.value = 1;
 });
 
@@ -1481,11 +1620,18 @@ watch(membershipTypes, (value) => {
 }, { immediate: true });
 
 const formatCurrency = (value: number) => {
-  return new Intl.NumberFormat('fr-FR', {
-    style: 'currency',
-    currency: 'MGA',
-    maximumFractionDigits: 0,
-  }).format(value);
+  try {
+    return new Intl.NumberFormat('fr-FR', {
+      style: 'currency',
+      currency: appSettings.value.currencyCode,
+    }).format(value);
+  } catch {
+    return new Intl.NumberFormat('fr-FR', {
+      style: 'currency',
+      currency: 'MGA',
+      maximumFractionDigits: 0,
+    }).format(value);
+  }
 };
 
 const formatChange = (value: number) => {
@@ -1642,7 +1788,7 @@ const initialsFor = (value: string) => {
 };
 
 onMounted(async () => {
-  await Promise.all([loadMembers(), loadAttendanceHistory(), loadStockItems(), loadPayments(), loadMembershipTypes()]);
+  await reloadAppData();
 });
 </script>
 
@@ -1945,7 +2091,7 @@ onMounted(async () => {
             <strong>{{ totalMembers }}</strong>
           </article>
           <article class="overview-card">
-            <span>Resultats de recherche</span>
+            <span>Resultats filtres</span>
             <strong>{{ filteredMembers.length }}</strong>
           </article>
           <article class="overview-card">
@@ -1967,6 +2113,26 @@ onMounted(async () => {
                 <button class="panel-chip" type="button" @click="loadMembers">Actualiser</button>
                 <button class="primary-button" type="button" @click="openCreateMemberModal">Nouveau membre</button>
               </div>
+            </div>
+
+            <div class="membership-toolbar">
+              <label>
+                <span>Filtrer par type d abonnement</span>
+                <select v-model="membershipTypeFilter" class="select-input">
+                  <option value="all">Tous les types</option>
+                  <option v-for="membershipTypeName in membershipTypeFilterOptions" :key="membershipTypeName" :value="membershipTypeName">
+                    {{ membershipTypeName }}
+                  </option>
+                </select>
+              </label>
+
+              <label>
+                <span>Trier par fin abonnement</span>
+                <select v-model="membershipSortOrder" class="select-input">
+                  <option value="end-asc">Plus proche d abord</option>
+                  <option value="end-desc">Plus loin d abord</option>
+                </select>
+              </label>
             </div>
 
             <div v-if="isLoading" class="empty-state">Chargement des membres...</div>
@@ -2011,8 +2177,9 @@ onMounted(async () => {
                 <p v-if="member.notes" class="membership-notes">{{ member.notes }}</p>
 
                 <div class="membership-actions">
-                  <button class="primary-button" type="button" @click="openRenewalModal(member)">Reabonner</button>
+                  <button class="panel-chip" type="button" @click="openMemberDetails(member)">Details</button>
                   <button class="panel-chip" type="button" @click="startEditing(member)">Modifier</button>
+                  <button class="primary-button" type="button" @click="openRenewalModal(member)">Reabonner</button>
                   <button class="danger-button" type="button" @click="removeMember(member.id)">Supprimer</button>
                 </div>
               </div>
@@ -2398,12 +2565,65 @@ onMounted(async () => {
             <strong>{{ membershipTypes.length === 0 ? formatCurrency(0) : formatCurrency(membershipTypes[0]?.price ?? 0) }}</strong>
           </article>
           <article class="overview-card">
-            <span>Edition</span>
-            <strong>{{ editingMembershipTypeId === null ? 'Nouveau type' : `#${editingMembershipTypeId}` }}</strong>
+            <span>Devise</span>
+            <strong>{{ appSettings.currencyCode }}</strong>
           </article>
         </section>
 
         <section class="content-grid stock-grid">
+          <article class="panel stock-form-panel">
+            <div class="panel-header">
+              <div>
+                <h2>Devise</h2>
+                <p>Choisissez la devise utilisee dans tous les montants de l application</p>
+              </div>
+            </div>
+
+            <form class="editor-form" @submit.prevent="saveAppSettings">
+              <label>
+                <span>Devise active</span>
+                <select v-model="settingsForm.currencyCode">
+                  <option v-for="currency in currencyOptions" :key="currency.code" :value="currency.code">
+                    {{ currency.label }} ({{ currency.code }})
+                  </option>
+                </select>
+              </label>
+
+              <button class="primary-button" :disabled="isSettingsSaving" type="submit">
+                {{ isSettingsSaving ? 'Enregistrement...' : 'Enregistrer la devise' }}
+              </button>
+            </form>
+          </article>
+
+          <article class="panel stock-form-panel">
+            <div class="panel-header">
+              <div>
+                <h2>Donnees locales</h2>
+                <p>Injectez un jeu de demo ou remettez la base locale a zero depuis cette page</p>
+              </div>
+            </div>
+
+            <div class="editor-form">
+              <div class="form-hint-card">
+                <strong>Seeder demo</strong>
+                <span>Ajoute des membres exemples, abonnements en retard ou actifs, presences, stock et paiements sans supprimer les donnees existantes.</span>
+              </div>
+
+              <button class="primary-button" :disabled="isDataToolsRunning" type="button" @click="seedDemoData">
+                {{ isDataToolsRunning ? 'Traitement...' : 'Seeder demo' }}
+              </button>
+
+              <div class="form-hint-card">
+                <strong>Reset data</strong>
+                <span>Efface toutes les donnees locales puis remet les parametres et types d adhesion par defaut.</span>
+              </div>
+
+              <button class="danger-button" :disabled="isDataToolsRunning" type="button" @click="resetAppData">
+                {{ isDataToolsRunning ? 'Traitement...' : 'Reset data' }}
+              </button>
+            </div>
+          </article>
+
           <article class="panel stock-form-panel">
             <div class="panel-header">
               <div>

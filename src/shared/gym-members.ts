@@ -120,6 +120,14 @@ export interface MembershipSubscriptionInput {
   paymentMethod: PaymentMethod;
 }
 
+export interface AppSettings {
+  currencyCode: string;
+}
+
+export interface AppSettingsInput {
+  currencyCode: string;
+}
+
 export interface GymMemberInput {
   fullName: string;
   email: string | null;
@@ -154,4 +162,8 @@ export interface GymMemberApi {
   updateMembershipType(id: number, membershipType: MembershipTypeInput): Promise<MembershipType>;
   removeMembershipType(id: number): Promise<void>;
   createMembershipSubscription(input: MembershipSubscriptionInput): Promise<MembershipSubscriptionRecord>;
+  getAppSettings(): Promise<AppSettings>;
+  updateAppSettings(settings: AppSettingsInput): Promise<AppSettings>;
+  seedDemoData(): Promise<void>;
+  resetAppData(): Promise<void>;
 }

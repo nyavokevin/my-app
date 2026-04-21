@@ -98,6 +98,10 @@ const registerGymMemberHandlers = () => {
   ipcMain.removeHandler('gym-members:membership-types:update');
   ipcMain.removeHandler('gym-members:membership-types:remove');
   ipcMain.removeHandler('gym-members:membership-subscriptions:create');
+  ipcMain.removeHandler('gym-members:settings:get');
+  ipcMain.removeHandler('gym-members:settings:update');
+  ipcMain.removeHandler('gym-members:data:seed-demo');
+  ipcMain.removeHandler('gym-members:data:reset');
 
   ipcMain.handle('gym-members:list', async () => getMemberService().listMembers());
   ipcMain.handle('gym-members:create', async (_event, member: GymMemberInput) => getMemberService().createMember(member));
@@ -138,6 +142,14 @@ const registerGymMemberHandlers = () => {
     getMemberService().deleteMembershipType(id);
   });
   ipcMain.handle('gym-members:membership-subscriptions:create', async (_event, input) => getMemberService().createMembershipSubscription(input));
+  ipcMain.handle('gym-members:settings:get', async () => getMemberService().getAppSettings());
+  ipcMain.handle('gym-members:settings:update', async (_event, settings) => getMemberService().updateAppSettings(settings));
+  ipcMain.handle('gym-members:data:seed-demo', async () => {
+    getMemberService().seedDemoData();
+  });
+  ipcMain.handle('gym-members:data:reset', async () => {
+    getMemberService().resetAppData();
+  });
 };
 
 const initializeMainProcess = () => {

@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type {
 	AttendanceAction,
 	AttendanceSource,
+	AppSettingsInput,
 	GymMemberApi,
 	GymMemberInput,
 	MembershipSubscriptionInput,
@@ -37,6 +38,10 @@ const gymMembersApi: GymMemberApi = {
 	updateMembershipType: (id: number, membershipType: MembershipTypeInput) => ipcRenderer.invoke('gym-members:membership-types:update', id, membershipType),
 	removeMembershipType: (id: number) => ipcRenderer.invoke('gym-members:membership-types:remove', id),
 	createMembershipSubscription: (input: MembershipSubscriptionInput) => ipcRenderer.invoke('gym-members:membership-subscriptions:create', input),
+	getAppSettings: () => ipcRenderer.invoke('gym-members:settings:get'),
+	updateAppSettings: (settings: AppSettingsInput) => ipcRenderer.invoke('gym-members:settings:update', settings),
+	seedDemoData: () => ipcRenderer.invoke('gym-members:data:seed-demo'),
+	resetAppData: () => ipcRenderer.invoke('gym-members:data:reset'),
 };
 
 contextBridge.exposeInMainWorld('gymMembers', gymMembersApi);
