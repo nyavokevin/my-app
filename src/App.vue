@@ -50,6 +50,15 @@ type AttendanceDayGroup = {
   dayLabel: string;
   records: AttendanceRecord[];
 };
+type PresenceMembershipAlertTone = 'success' | 'warning' | 'danger';
+
+type PresenceMembershipAlert = {
+  memberName: string;
+  membershipEndsAt: string | null;
+  tone: PresenceMembershipAlertTone;
+  title: string;
+  message: string;
+};
 
 type PaymentFormState = {
   label: string;
@@ -81,6 +90,7 @@ const submittedSearchQuery = ref('');
 const isMemberModalOpen = ref(false);
 const isMemberDetailsModalOpen = ref(false);
 const isRenewalModalOpen = ref(false);
+const isPresenceMembershipAlertOpen = ref(false);
 const isStockModalOpen = ref(false);
 const isStockDetailsModalOpen = ref(false);
 const isStockSaleModalOpen = ref(false);
@@ -113,6 +123,7 @@ const stockSearchQuery = ref('');
 const stockSaleCustomerQuery = ref('');
 const stockHistory = ref<StockHistoryRecord[]>([]);
 const isStockHistoryLoading = ref(false);
+const presenceMembershipAlert = ref<PresenceMembershipAlert | null>(null);
 
 const paymentCategoryOptions: PaymentCategory[] = ['membership', 'stock'];
 const navItems: NavItem[] = [
@@ -285,6 +296,16 @@ const parseStoredDate = (value: string) => {
   const normalized = value.includes('T') ? value : value.replace(' ', 'T');
   const parsed = new Date(normalized);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const toDayDate = (value: string) => {
+  const parsed = parseStoredDate(value);
+
+  if (parsed === null) {
+    return null;
+  }
+
+  return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
 };
 
 const isSameMonth = (value: string, referenceDate: Date) => {
@@ -1267,10 +1288,10 @@ const submitPhoneCheckIn = async (
   source: AttendanceSource = 'phone-number',
   action: AttendanceAction = selectedAttendanceAction.value,
 ) => {
-  const nextPhone = phone.trim();
+  const lookupValue = phone.trim();
 
-  if (!nextPhone) {
-    errorMessage.value = 'Le numero de telephone est requis pour enregistrer une entree.';
+  if (!lookupValue) {
+    errorMessage.value = 'Le numero de telephone ou l identifiant membre est requis pour enregistrer une entree.';
     return;
   }
 
@@ -1278,7 +1299,26 @@ const submitPhoneCheckIn = async (
   errorMessage.value = '';
 
   try {
-    const attendance = await memberApi.checkInByPhone(nextPhone, source, action);
+    let attendance: AttendanceRecord | null = null;
+    const numericValue = lookupValue.replace(/\D/g, '');
+    const canTryId = /^\d+$/.test(lookupValue);
+
+    if (source === 'member-id' || canTryId) {
+      try {
+        attendance = await memberApi.checkInByMemberId(Number(lookupValue), action);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '';
+
+        if (source === 'member-id' || !message.includes('Member not found')) {
+          throw error;
+        }
+      }
+    }
+
+    if (attendance === null) {
+      attendance = await memberApi.checkInByPhone(numericValue || lookupValue, source, action);
+    }
+
     attendanceHistory.value = [attendance, ...attendanceHistory.value];
     checkInPhone.value = '';
   } catch (error) {
@@ -1321,6 +1361,7 @@ const submitPresenceLookup = async () => {
     }
 
     attendanceHistory.value = [attendance, ...attendanceHistory.value];
+    openPresenceMembershipAlert(attendance.memberId);
     presenceLookup.value = '';
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : 'Impossible de traiter cette recherche.';
@@ -1499,6 +1540,81 @@ const formatPaymentCategory = (category: PaymentCategory) => {
 
 const formatPaymentMethod = (paymentMethod: PaymentMethod) => {
   return paymentMethod === 'mobile-money' ? 'Mobile money' : 'Espece';
+};
+
+const closePresenceMembershipAlert = () => {
+  isPresenceMembershipAlertOpen.value = false;
+  presenceMembershipAlert.value = null;
+};
+
+const buildPresenceMembershipAlert = (member: GymMember): PresenceMembershipAlert => {
+  if (!member.membershipEndsAt) {
+    return {
+      memberName: member.fullName,
+      membershipEndsAt: null,
+      tone: 'warning',
+      title: 'Fin abonnement non definie',
+      message: 'Aucune date de fin d abonnement n est enregistree pour ce membre.',
+    };
+  }
+
+  const today = new Date();
+  const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const membershipEndDate = toDayDate(member.membershipEndsAt);
+
+  if (membershipEndDate === null) {
+    return {
+      memberName: member.fullName,
+      membershipEndsAt: member.membershipEndsAt,
+      tone: 'warning',
+      title: 'Date de fin invalide',
+      message: `Fin abonnement a : ${member.membershipEndsAt}`,
+    };
+  }
+
+  const daysUntilEnd = Math.round((membershipEndDate.getTime() - todayDate.getTime()) / 86400000);
+  const formattedEndDate = formatAttendanceDate(member.membershipEndsAt);
+
+  if (daysUntilEnd <= 0) {
+    return {
+      memberName: member.fullName,
+      membershipEndsAt: member.membershipEndsAt,
+      tone: 'danger',
+      title: 'Abonnement fini',
+      message: daysUntilEnd < 0
+        ? `Abonnement termine depuis le ${formattedEndDate}.`
+        : `Abonnement fini aujourd hui. Fin abonnement a : ${formattedEndDate}.`,
+    };
+  }
+
+  if (daysUntilEnd <= 7) {
+    return {
+      memberName: member.fullName,
+      membershipEndsAt: member.membershipEndsAt,
+      tone: 'warning',
+      title: 'Abonnement bientot fini',
+      message: `Fin abonnement a : ${formattedEndDate}. Il reste ${daysUntilEnd} jour${daysUntilEnd > 1 ? 's' : ''}.`,
+    };
+  }
+
+  return {
+    memberName: member.fullName,
+    membershipEndsAt: member.membershipEndsAt,
+    tone: 'success',
+    title: 'Abonnement actif',
+    message: `Fin abonnement a : ${formattedEndDate}.`,
+  };
+};
+
+const openPresenceMembershipAlert = (memberId: number) => {
+  const member = members.value.find((entry) => entry.id === memberId);
+
+  if (!member) {
+    return;
+  }
+
+  presenceMembershipAlert.value = buildPresenceMembershipAlert(member);
+  isPresenceMembershipAlertOpen.value = true;
 };
 
 const formatMembershipDuration = (durationCount?: number | null, durationUnit?: MembershipDurationUnit | null) => {
@@ -1862,7 +1978,7 @@ onMounted(async () => {
                   <div class="roster-avatar">{{ initialsFor(member.fullName) }}</div>
                   <div class="membership-card-copy">
                     <strong>{{ member.fullName }}</strong>
-                    <span>{{ formatMemberEmail(member.email) }}</span>
+                    <span>#{{ member.id }} · {{ formatMemberEmail(member.email) }}</span>
                   </div>
                   <span :class="['member-status', member.active ? 'is-online' : 'is-idle']">
                     {{ member.active ? 'Actif' : 'Inactif' }}
@@ -1959,7 +2075,7 @@ onMounted(async () => {
             <div class="panel-header">
               <div>
                 <h2>Poste de presence</h2>
-                <p>Choisissez entree ou sortie puis enregistrez la presence par telephone</p>
+                <p>Choisissez entree ou sortie puis enregistrez la presence par telephone ou ID membre</p>
               </div>
               <div class="panel-actions">
                 <button class="panel-chip" type="button" @click="loadAttendanceHistory">Actualiser l historique</button>
@@ -1986,8 +2102,8 @@ onMounted(async () => {
 
             <form class="checkin-form" @submit.prevent="submitPhoneCheckIn()">
               <label>
-                <span>Telephone du membre</span>
-                <input v-model="checkInPhone" required type="tel" placeholder="06 00 00 00 00" />
+                <span>Telephone ou ID membre</span>
+                <input v-model="checkInPhone" required type="text" placeholder="06 00 00 00 00 ou 1024" />
               </label>
               <button class="primary-button" :disabled="isCheckInSaving" type="submit">
                 {{
@@ -2289,7 +2405,7 @@ onMounted(async () => {
 
         <section class="content-grid stock-grid">
           <article class="panel stock-form-panel">
-+            <div class="panel-header">
+            <div class="panel-header">
               <div>
                 <h2>{{ membershipTypeFormTitle }}</h2>
                 <p>Enregistrez les noms et prix des formules utilises dans le tableau de bord et le formulaire membre</p>
@@ -2902,6 +3018,29 @@ onMounted(async () => {
             </button>
           </div>
         </form>
+      </article>
+    </div>
+
+    <div v-if="isPresenceMembershipAlertOpen && presenceMembershipAlert" class="modal-backdrop" @click.self="closePresenceMembershipAlert">
+      <article :class="['modal-card', 'presence-membership-alert-modal', `is-${presenceMembershipAlert.tone}`]">
+        <div class="panel-header modal-header">
+          <div>
+            <h2>{{ presenceMembershipAlert.title }}</h2>
+            <p>{{ presenceMembershipAlert.memberName }}</p>
+          </div>
+          <button class="circle-button modal-close" type="button" @click="closePresenceMembershipAlert">X</button>
+        </div>
+
+        <section class="presence-membership-alert-body">
+          <strong>{{ presenceMembershipAlert.message }}</strong>
+          <p v-if="presenceMembershipAlert.membershipEndsAt">
+            Fin abonnement a : {{ formatAttendanceDate(presenceMembershipAlert.membershipEndsAt) }}
+          </p>
+        </section>
+
+        <div class="modal-footer">
+          <button class="primary-button" type="button" @click="closePresenceMembershipAlert">Fermer</button>
+        </div>
       </article>
     </div>
   </div>

@@ -302,6 +302,30 @@ textarea {
   transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 
+.editor-form select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 46px;
+  background-image:
+    linear-gradient(135deg, transparent 50%, rgba(248, 250, 252, 0.8) 50%),
+    linear-gradient(45deg, rgba(248, 250, 252, 0.8) 50%, transparent 50%);
+  background-position:
+    calc(100% - 22px) calc(50% - 2px),
+    calc(100% - 16px) calc(50% - 2px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+
+.editor-form select:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.editor-form select option {
+  background: #1d1d26;
+  color: #f8fafc;
+}
+
 .search-box input {
   width: 260px;
 }
@@ -402,6 +426,51 @@ textarea {
 
 .member-details-modal {
   width: min(860px, 100%);
+}
+
+.presence-membership-alert-modal {
+  width: min(520px, 100%);
+}
+
+.presence-membership-alert-body {
+  display: grid;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.presence-membership-alert-body strong,
+.presence-membership-alert-body p {
+  margin: 0;
+}
+
+.presence-membership-alert-modal.is-success {
+  background: linear-gradient(180deg, rgba(10, 70, 36, 0.96), rgba(21, 31, 27, 0.96));
+  border: 1px solid rgba(74, 222, 128, 0.35);
+}
+
+.presence-membership-alert-modal.is-success .presence-membership-alert-body strong,
+.presence-membership-alert-modal.is-success .modal-header p {
+  color: #d1fae5;
+}
+
+.presence-membership-alert-modal.is-warning {
+  background: linear-gradient(180deg, rgba(120, 82, 10, 0.96), rgba(39, 31, 18, 0.96));
+  border: 1px solid rgba(250, 204, 21, 0.35);
+}
+
+.presence-membership-alert-modal.is-warning .presence-membership-alert-body strong,
+.presence-membership-alert-modal.is-warning .modal-header p {
+  color: #fef3c7;
+}
+
+.presence-membership-alert-modal.is-danger {
+  background: linear-gradient(180deg, rgba(127, 29, 29, 0.96), rgba(42, 23, 26, 0.96));
+  border: 1px solid rgba(248, 113, 113, 0.35);
+}
+
+.presence-membership-alert-modal.is-danger .presence-membership-alert-body strong,
+.presence-membership-alert-modal.is-danger .modal-header p {
+  color: #fecaca;
 }
 
 .member-details-grid {
@@ -515,6 +584,10 @@ textarea {
 .snapshot-card span {
   margin: 0 0 8px;
   font-size: 0.95rem;
+}
+
+.overview-card span {
+  margin-bottom: 12px;
 }
 
 .stat-card strong,
