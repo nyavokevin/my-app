@@ -901,7 +901,7 @@ textarea {
 
 .membership-meta {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
   margin: 18px 0 0;
 }
@@ -1330,13 +1330,20 @@ textarea {
 }
 
 .checkbox-row {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
   gap: 12px;
 }
 
 .checkbox-row input {
-  width: auto;
+  width: 18px;
+  height: 18px;
+  margin: 3px 0 0;
+}
+
+.checkbox-row span {
+  line-height: 1.45;
 }
 
 .placeholder-panel {

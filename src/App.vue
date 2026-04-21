@@ -9,10 +9,11 @@ import type {
   AttendanceSource,
   GymMember,
   GymMemberInput,
+  MembershipDurationUnit,
+  MembershipSubscriptionInput,
   MembershipType,
   MembershipTypeInput,
   PaymentCategory,
-  PaymentInput,
   PaymentRecord,
   StockHistoryRecord,
   StockItem,
@@ -47,6 +48,15 @@ type AttendanceDayGroup = {
   dayKey: string;
   dayLabel: string;
   records: AttendanceRecord[];
+};
+
+type PaymentFormState = {
+  label: string;
+  amount: number;
+  category: PaymentCategory;
+  memberId: number | null;
+  membershipTypeId: number | null;
+  startedAt: string;
 };
 
 const isPresenceClientWindow = new URLSearchParams(window.location.search).get('view') === 'presence-client';
@@ -152,16 +162,47 @@ const stockSaleForm = reactive<StockSaleInput>({
   notes: '',
 });
 
-const paymentForm = reactive<PaymentInput>({
+const paymentForm = reactive<PaymentFormState>({
   label: '',
   amount: 0,
   category: 'membership',
+  memberId: null,
+  membershipTypeId: null,
+  startedAt: new Date().toISOString().slice(0, 10),
 });
 
 const membershipTypeForm = reactive<MembershipTypeInput>({
   name: '',
   price: 0,
+  durationCount: 1,
+  durationUnit: 'months',
 });
+
+const normalizeDurationUnit = (durationUnit?: MembershipDurationUnit | null): MembershipDurationUnit => {
+  if (durationUnit === 'days' || durationUnit === 'years' || durationUnit === 'months') {
+    return durationUnit;
+  }
+
+  return 'months';
+};
+
+const normalizeDurationCount = (durationCount?: number | null) => {
+  const normalized = Number(durationCount);
+  return Number.isFinite(normalized) && normalized > 0 ? normalized : 1;
+};
+
+const normalizeMembershipTypeDetails = (membershipType: MembershipType | null) => {
+  if (membershipType === null) {
+    return null;
+  }
+
+  return {
+    ...membershipType,
+    price: Number.isFinite(Number(membershipType.price)) ? Number(membershipType.price) : 0,
+    durationCount: normalizeDurationCount(membershipType.durationCount),
+    durationUnit: normalizeDurationUnit(membershipType.durationUnit),
+  };
+};
 
 const membershipOptions = computed(() => membershipTypes.value.map((membershipType) => membershipType.name));
 
@@ -186,7 +227,19 @@ const membershipPriceMap = computed(() => {
 });
 
 const selectedMembershipType = computed(() => {
-  return membershipTypes.value.find((membershipType) => membershipType.name === form.membershipType) ?? null;
+  return normalizeMembershipTypeDetails(
+    membershipTypes.value.find((membershipType) => membershipType.name === form.membershipType) ?? null,
+  );
+});
+
+const selectedPaymentMembershipType = computed(() => {
+  return normalizeMembershipTypeDetails(
+    membershipTypes.value.find((membershipType) => membershipType.id === paymentForm.membershipTypeId) ?? null,
+  );
+});
+
+const selectedPaymentMember = computed(() => {
+  return members.value.find((member) => member.id === paymentForm.memberId) ?? null;
 });
 
 const membershipTypeFormTitle = computed(() => {
@@ -257,11 +310,15 @@ const memberMatchesQuery = (member: GymMember, query: string) => {
 
   return [
     member.fullName,
-    member.email,
+    member.email ?? '',
     member.phone,
     member.membershipType,
     member.joinedAt,
   ].some((value) => value.toLowerCase().includes(normalizedQuery));
+};
+
+const formatMemberEmail = (email: string | null) => {
+  return email && email.trim() ? email : 'Sans email';
 };
 
 const filteredMembers = computed(() => {
@@ -760,6 +817,9 @@ const saveMember = async () => {
     if (editingMemberId.value === null) {
       const created = await memberApi.create({ ...form });
 
+      members.value = [created, ...members.value];
+      closeMemberModal();
+
       if (createWithMembershipPayment.value) {
         const membershipType = selectedMembershipType.value;
 
@@ -767,25 +827,28 @@ const saveMember = async () => {
           throw new Error('Selectionnez un type d adhesion enregistre avant de creer un paiement.');
         }
 
-        await memberApi.createPayment({
-          label: `Adhesion ${membershipType.name} - ${created.fullName}`,
-          amount: membershipType.price,
-          category: 'membership',
-        });
+        try {
+          await memberApi.createMembershipSubscription({
+            memberId: created.id,
+            membershipTypeId: membershipType.id,
+            startedAt: created.joinedAt,
+          });
 
-        await loadPayments();
+          await Promise.all([loadMembers(), loadPayments()]);
+        } catch (error) {
+          await loadMembers();
+          const reason = error instanceof Error ? error.message : 'Impossible d enregistrer le paiement d adhesion.';
+          errorMessage.value = `Membre cree, mais abonnement non enregistre: ${reason}`;
+        }
       }
-
-      members.value = [created, ...members.value];
     } else {
       const updated = await memberApi.update(editingMemberId.value, { ...form });
       members.value = members.value.map((member) =>
         member.id === updated.id ? updated : member,
       );
-    }
 
-    resetForm();
-    isMemberModalOpen.value = false;
+      closeMemberModal();
+    }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : 'Impossible d enregistrer le membre.';
   } finally {
@@ -1018,15 +1081,30 @@ const savePayment = async () => {
   errorMessage.value = '';
 
   try {
-    const created = await memberApi.createPayment({
-      label: paymentForm.label,
-      amount: Number(paymentForm.amount),
-      category: paymentForm.category,
-    });
-    payments.value = [created, ...payments.value];
+    if (paymentForm.category === 'membership') {
+      const membershipInput: MembershipSubscriptionInput = {
+        memberId: Number(paymentForm.memberId),
+        membershipTypeId: Number(paymentForm.membershipTypeId),
+        startedAt: paymentForm.startedAt,
+      };
+
+      await memberApi.createMembershipSubscription(membershipInput);
+      await Promise.all([loadMembers(), loadPayments()]);
+    } else {
+      const created = await memberApi.createPayment({
+        label: paymentForm.label,
+        amount: Number(paymentForm.amount),
+        category: paymentForm.category,
+      });
+      payments.value = [created, ...payments.value];
+    }
+
     paymentForm.label = '';
     paymentForm.amount = 0;
     paymentForm.category = 'membership';
+    paymentForm.memberId = members.value[0]?.id ?? null;
+    paymentForm.membershipTypeId = membershipTypes.value[0]?.id ?? null;
+    paymentForm.startedAt = new Date().toISOString().slice(0, 10);
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : 'Impossible d enregistrer le paiement.';
   } finally {
@@ -1038,6 +1116,8 @@ const resetMembershipTypeForm = () => {
   editingMembershipTypeId.value = null;
   membershipTypeForm.name = '';
   membershipTypeForm.price = 0;
+  membershipTypeForm.durationCount = 1;
+  membershipTypeForm.durationUnit = 'months';
 };
 
 const startEditingMembershipType = (membershipType: MembershipType) => {
@@ -1045,6 +1125,8 @@ const startEditingMembershipType = (membershipType: MembershipType) => {
   editingMembershipTypeId.value = membershipType.id;
   membershipTypeForm.name = membershipType.name;
   membershipTypeForm.price = membershipType.price;
+  membershipTypeForm.durationCount = membershipType.durationCount;
+  membershipTypeForm.durationUnit = membershipType.durationUnit;
 };
 
 const saveMembershipType = async () => {
@@ -1056,12 +1138,16 @@ const saveMembershipType = async () => {
       const created = await memberApi.createMembershipType({
         name: membershipTypeForm.name,
         price: Number(membershipTypeForm.price),
+        durationCount: Number(membershipTypeForm.durationCount),
+        durationUnit: membershipTypeForm.durationUnit,
       });
       membershipTypes.value = [...membershipTypes.value, created].sort((left, right) => left.price - right.price || left.name.localeCompare(right.name));
     } else {
       const updated = await memberApi.updateMembershipType(editingMembershipTypeId.value, {
         name: membershipTypeForm.name,
         price: Number(membershipTypeForm.price),
+        durationCount: Number(membershipTypeForm.durationCount),
+        durationUnit: membershipTypeForm.durationUnit,
       });
       membershipTypes.value = membershipTypes.value
         .map((membershipType) => membershipType.id === updated.id ? updated : membershipType)
@@ -1227,6 +1313,51 @@ watch(membershipOptions, (value) => {
   }
 }, { immediate: true });
 
+watch(() => paymentForm.category, (category) => {
+  if (category === 'membership') {
+    paymentForm.label = '';
+    paymentForm.memberId = paymentForm.memberId ?? members.value[0]?.id ?? null;
+    paymentForm.membershipTypeId = paymentForm.membershipTypeId ?? membershipTypes.value[0]?.id ?? null;
+    paymentForm.amount = selectedPaymentMembershipType.value?.price ?? 0;
+    return;
+  }
+
+  paymentForm.memberId = null;
+  paymentForm.membershipTypeId = null;
+});
+
+watch(selectedPaymentMembershipType, (membershipType) => {
+  if (paymentForm.category !== 'membership' || membershipType === null) {
+    return;
+  }
+
+  paymentForm.amount = membershipType.price;
+}, { immediate: true });
+
+watch(membershipTypes, (value) => {
+  if (paymentForm.category !== 'membership') {
+    return;
+  }
+
+  if (paymentForm.membershipTypeId === null || !value.some((membershipType) => membershipType.id === paymentForm.membershipTypeId)) {
+    paymentForm.membershipTypeId = value[0]?.id ?? null;
+  }
+
+  if (!form.membershipType || !value.some((membershipType) => membershipType.name === form.membershipType)) {
+    form.membershipType = value[0]?.name ?? '';
+  }
+}, { immediate: true });
+
+watch(members, (value) => {
+  if (paymentForm.category !== 'membership') {
+    return;
+  }
+
+  if (paymentForm.memberId === null || !value.some((member) => member.id === paymentForm.memberId)) {
+    paymentForm.memberId = value[0]?.id ?? null;
+  }
+}, { immediate: true });
+
 const formatCurrency = (value: number) => {
   return new Intl.NumberFormat('fr-FR', {
     style: 'currency',
@@ -1283,6 +1414,21 @@ const formatAttendanceAction = (action: AttendanceAction) => {
 
 const formatPaymentCategory = (category: PaymentCategory) => {
   return category === 'membership' ? 'Adhesion' : 'Stock';
+};
+
+const formatMembershipDuration = (durationCount?: number | null, durationUnit?: MembershipDurationUnit | null) => {
+  const normalizedDurationCount = normalizeDurationCount(durationCount);
+  const normalizedDurationUnit = normalizeDurationUnit(durationUnit);
+
+  if (normalizedDurationUnit === 'days') {
+    return `${normalizedDurationCount} jour${normalizedDurationCount > 1 ? 's' : ''}`;
+  }
+
+  if (normalizedDurationUnit === 'years') {
+    return `${normalizedDurationCount} an${normalizedDurationCount > 1 ? 's' : ''}`;
+  }
+
+  return `${normalizedDurationCount} mois`;
 };
 
 const initialsFor = (value: string) => {
@@ -1590,7 +1736,7 @@ onMounted(async () => {
               <div v-for="member in submittedSearchResults" :key="member.id" class="search-result-row">
                 <div class="search-result-copy">
                   <strong>{{ member.fullName }}</strong>
-                  <span>{{ member.membershipType }} · {{ member.phone }} · {{ member.email }}</span>
+                  <span>{{ member.membershipType }} · {{ member.phone }} · {{ formatMemberEmail(member.email) }}</span>
                 </div>
 
                 <div class="search-result-actions">
@@ -1645,7 +1791,7 @@ onMounted(async () => {
                   <div class="roster-avatar">{{ initialsFor(member.fullName) }}</div>
                   <div class="membership-card-copy">
                     <strong>{{ member.fullName }}</strong>
-                    <span>{{ member.email }}</span>
+                    <span>{{ formatMemberEmail(member.email) }}</span>
                   </div>
                   <span :class="['member-status', member.active ? 'is-online' : 'is-idle']">
                     {{ member.active ? 'Actif' : 'Inactif' }}
@@ -1664,6 +1810,14 @@ onMounted(async () => {
                   <div>
                     <dt>Inscrit le</dt>
                     <dd>{{ member.joinedAt }}</dd>
+                  </div>
+                  <div>
+                    <dt>Premiere adhesion</dt>
+                    <dd>{{ member.firstMembershipAt ? formatAttendanceDate(member.firstMembershipAt) : 'Non definie' }}</dd>
+                  </div>
+                  <div>
+                    <dt>Fin abonnement</dt>
+                    <dd>{{ member.membershipEndsAt ? formatAttendanceDate(member.membershipEndsAt) : 'Non definie' }}</dd>
                   </div>
                 </dl>
 
@@ -1933,12 +2087,26 @@ onMounted(async () => {
             <form class="editor-form" @submit.prevent="savePayment">
               <label>
                 <span>Libelle du paiement</span>
-                <input v-model="paymentForm.label" required type="text" placeholder="Adhesion mensuelle - Alex" />
+                <input v-model="paymentForm.label" :required="paymentForm.category === 'stock'" :disabled="paymentForm.category === 'membership'" type="text" placeholder="Vente accessoires - comptoir" />
               </label>
 
               <label>
                 <span>Montant</span>
-                <input v-model.number="paymentForm.amount" required min="0" step="0.01" type="number" placeholder="39" />
+                <input
+                  v-if="paymentForm.category === 'stock'"
+                  v-model.number="paymentForm.amount"
+                  required
+                  min="0"
+                  step="0.01"
+                  type="number"
+                  placeholder="39"
+                />
+                <input
+                  v-else
+                  :value="selectedPaymentMembershipType ? formatCurrency(selectedPaymentMembershipType.price) : formatCurrency(0)"
+                  disabled
+                  type="text"
+                />
               </label>
 
               <label>
@@ -1949,6 +2117,44 @@ onMounted(async () => {
                   </option>
                 </select>
               </label>
+
+              <template v-if="paymentForm.category === 'membership'">
+                <label>
+                  <span>Membre</span>
+                  <select v-model.number="paymentForm.memberId" required>
+                    <option :value="null" disabled>Selectionner un membre</option>
+                    <option v-for="member in members" :key="member.id" :value="member.id">
+                      {{ member.fullName }}
+                    </option>
+                  </select>
+                </label>
+
+                <label>
+                  <span>Type d adhesion</span>
+                  <select v-model.number="paymentForm.membershipTypeId" required>
+                    <option :value="null" disabled>Selectionner une formule</option>
+                    <option v-for="membershipType in membershipTypes" :key="membershipType.id" :value="membershipType.id">
+                      {{ membershipType.name }}
+                    </option>
+                  </select>
+                </label>
+
+                <label>
+                  <span>Date de debut</span>
+                  <input v-model="paymentForm.startedAt" required type="date" />
+                </label>
+
+                <div class="form-hint-card">
+                  <strong>{{ selectedPaymentMembershipType?.name ?? 'Type d adhesion requis' }}</strong>
+                  <span>
+                    {{
+                      selectedPaymentMembershipType && selectedPaymentMember
+                        ? `${selectedPaymentMember.fullName} sera facture ${formatCurrency(selectedPaymentMembershipType.price)} pour ${formatMembershipDuration(selectedPaymentMembershipType.durationCount, selectedPaymentMembershipType.durationUnit)}.`
+                        : 'Selectionnez un membre et une formule pour generer automatiquement le paiement et la date de fin.'
+                    }}
+                  </span>
+                </div>
+              </template>
 
               <button class="primary-button" :disabled="isPaymentSaving" type="submit">
                 {{ isPaymentSaving ? 'Enregistrement...' : 'Enregistrer le paiement' }}
@@ -2031,6 +2237,29 @@ onMounted(async () => {
                 />
               </label>
 
+              <div class="field-row">
+                <label>
+                  <span>Duree</span>
+                  <input
+                    v-model.number="membershipTypeForm.durationCount"
+                    required
+                    min="1"
+                    step="1"
+                    type="number"
+                    placeholder="1"
+                  />
+                </label>
+
+                <label>
+                  <span>Unite</span>
+                  <select v-model="membershipTypeForm.durationUnit">
+                    <option value="days">Jour(s)</option>
+                    <option value="months">Mois</option>
+                    <option value="years">Annee(s)</option>
+                  </select>
+                </label>
+              </div>
+
               <button class="primary-button" :disabled="isMembershipTypeSaving" type="submit">
                 {{ membershipTypeSubmitLabel }}
               </button>
@@ -2053,6 +2282,7 @@ onMounted(async () => {
                 <div class="inventory-copy">
                   <strong>{{ membershipType.name }}</strong>
                   <span>{{ formatAttendanceDate(membershipType.createdAt) }}</span>
+                  <span>{{ formatMembershipDuration(membershipType.durationCount, membershipType.durationUnit) }}</span>
                 </div>
                 <div class="inventory-meta">
                   <strong>{{ formatCurrency(membershipType.price) }}</strong>
@@ -2185,7 +2415,7 @@ onMounted(async () => {
 
           <label>
             <span>Email</span>
-            <input v-model="form.email" required type="email" placeholder="alex@gym.local" />
+            <input v-model="form.email" type="email" placeholder="alex@gym.local" />
           </label>
 
           <div class="field-row">
@@ -2238,7 +2468,7 @@ onMounted(async () => {
             <span>
               {{
                 selectedMembershipType
-                  ? `Un paiement d adhesion de ${formatCurrency(selectedMembershipType.price)} sera enregistre automatiquement.`
+                  ? `Un paiement d adhesion de ${formatCurrency(selectedMembershipType.price)} sera enregistre automatiquement pour ${formatMembershipDuration(selectedMembershipType.durationCount, selectedMembershipType.durationUnit)}.`
                   : 'Choisissez un type d adhesion enregistre avant de valider ce membre.'
               }}
             </span>
@@ -2475,7 +2705,7 @@ onMounted(async () => {
           <article class="member-details-card">
             <span>Telephone</span>
             <strong>{{ selectedSearchMember.phone }}</strong>
-            <p>{{ selectedSearchMember.email }}</p>
+            <p>{{ formatMemberEmail(selectedSearchMember.email) }}</p>
           </article>
 
           <article class="member-details-card">

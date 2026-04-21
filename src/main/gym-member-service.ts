@@ -9,6 +9,9 @@ import type {
   AttendanceSource,
   GymMember,
   GymMemberInput,
+  MembershipDurationUnit,
+  MembershipSubscriptionInput,
+  MembershipSubscriptionRecord,
   MembershipType,
   MembershipTypeInput,
   PaymentInput,
@@ -25,10 +28,13 @@ import type {
 type GymMemberRow = {
   id: number;
   full_name: string;
-  email: string;
+  email: string | null;
   phone: string;
   membership_type: string;
   joined_at: string;
+  first_membership_at: string | null;
+  membership_started_at: string | null;
+  membership_ends_at: string | null;
   notes: string;
   active: number;
 };
@@ -77,6 +83,20 @@ type MembershipTypeRow = {
   id: number;
   name: string;
   price: number;
+  duration_count: number;
+  duration_unit: MembershipDurationUnit;
+  created_at: string;
+};
+
+type MembershipSubscriptionRow = {
+  id: number;
+  member_id: number;
+  member_name: string;
+  membership_type_id: number;
+  membership_type_name: string;
+  started_at: string;
+  ends_at: string;
+  payment_id: number | null;
   created_at: string;
 };
 
@@ -105,6 +125,25 @@ export class GymMemberService {
         phone,
         membership_type,
         joined_at,
+        (
+          SELECT MIN(ms.started_at)
+          FROM membership_subscriptions ms
+          WHERE ms.member_id = gym_members.id
+        ) as first_membership_at,
+        (
+          SELECT ms.started_at
+          FROM membership_subscriptions ms
+          WHERE ms.member_id = gym_members.id
+          ORDER BY ms.ends_at DESC, ms.started_at DESC, ms.id DESC
+          LIMIT 1
+        ) as membership_started_at,
+        (
+          SELECT ms.ends_at
+          FROM membership_subscriptions ms
+          WHERE ms.member_id = gym_members.id
+          ORDER BY ms.ends_at DESC, ms.started_at DESC, ms.id DESC
+          LIMIT 1
+        ) as membership_ends_at,
         notes,
         active
       FROM gym_members
@@ -421,7 +460,7 @@ export class GymMemberService {
 
   listMembershipTypes(): MembershipType[] {
     const query = this.database.prepare(`
-      SELECT id, name, price, created_at
+      SELECT id, name, price, duration_count, duration_unit, created_at
       FROM membership_types
       ORDER BY price ASC, name ASC
     `);
@@ -432,8 +471,8 @@ export class GymMemberService {
   createMembershipType(membershipType: MembershipTypeInput): MembershipType {
     const normalized = this.normalizeMembershipType(membershipType);
     const statement = this.database.prepare(`
-      INSERT INTO membership_types (name, price)
-      VALUES (@name, @price)
+      INSERT INTO membership_types (name, price, duration_count, duration_unit)
+      VALUES (@name, @price, @durationCount, @durationUnit)
     `);
 
     const result = statement.run(normalized);
@@ -444,7 +483,7 @@ export class GymMemberService {
     const normalized = this.normalizeMembershipType(membershipType);
     const statement = this.database.prepare(`
       UPDATE membership_types
-      SET name = @name, price = @price
+      SET name = @name, price = @price, duration_count = @durationCount, duration_unit = @durationUnit
       WHERE id = @id
     `);
 
@@ -455,6 +494,69 @@ export class GymMemberService {
     }
 
     return this.getMembershipTypeById(id);
+  }
+
+  createMembershipSubscription(input: MembershipSubscriptionInput): MembershipSubscriptionRecord {
+    const normalized = this.normalizeMembershipSubscription(input);
+
+    const transaction = this.database.transaction(() => {
+      const member = this.getMemberRowById(normalized.memberId);
+      const membershipType = this.getMembershipTypeRowById(normalized.membershipTypeId);
+      const endsAt = this.calculateMembershipEndDate(
+        normalized.startedAt,
+        membershipType.duration_count,
+        membershipType.duration_unit,
+      );
+
+      const paymentResult = this.database.prepare(`
+        INSERT INTO payments (label, amount, category)
+        VALUES (@label, @amount, 'membership')
+      `).run({
+        label: `Adhesion ${membershipType.name} - ${member.full_name}`,
+        amount: membershipType.price,
+      });
+
+      const subscriptionResult = this.database.prepare(`
+        INSERT INTO membership_subscriptions (
+          member_id,
+          member_name,
+          membership_type_id,
+          membership_type_name,
+          started_at,
+          ends_at,
+          payment_id
+        ) VALUES (
+          @memberId,
+          @memberName,
+          @membershipTypeId,
+          @membershipTypeName,
+          @startedAt,
+          @endsAt,
+          @paymentId
+        )
+      `).run({
+        memberId: member.id,
+        memberName: member.full_name,
+        membershipTypeId: membershipType.id,
+        membershipTypeName: membershipType.name,
+        startedAt: normalized.startedAt,
+        endsAt,
+        paymentId: Number(paymentResult.lastInsertRowid),
+      });
+
+      this.database.prepare(`
+        UPDATE gym_members
+        SET membership_type = @membershipType
+        WHERE id = @memberId
+      `).run({
+        memberId: member.id,
+        membershipType: membershipType.name,
+      });
+
+      return this.getMembershipSubscriptionById(Number(subscriptionResult.lastInsertRowid));
+    });
+
+    return transaction();
   }
 
   deleteMembershipType(id: number): void {
@@ -471,7 +573,7 @@ export class GymMemberService {
       CREATE TABLE IF NOT EXISTS gym_members (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         full_name TEXT NOT NULL,
-        email TEXT NOT NULL UNIQUE,
+        email TEXT UNIQUE,
         phone TEXT NOT NULL,
         membership_type TEXT NOT NULL,
         joined_at TEXT NOT NULL,
@@ -534,7 +636,24 @@ export class GymMemberService {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
         price REAL NOT NULL,
+        duration_count INTEGER NOT NULL DEFAULT 1,
+        duration_unit TEXT NOT NULL DEFAULT 'months',
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS membership_subscriptions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        member_id INTEGER NOT NULL,
+        member_name TEXT NOT NULL,
+        membership_type_id INTEGER NOT NULL,
+        membership_type_name TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ends_at TEXT NOT NULL,
+        payment_id INTEGER,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ,FOREIGN KEY (member_id) REFERENCES gym_members(id) ON DELETE CASCADE
+        ,FOREIGN KEY (membership_type_id) REFERENCES membership_types(id) ON DELETE RESTRICT
+        ,FOREIGN KEY (payment_id) REFERENCES payments(id) ON DELETE SET NULL
       );
     `);
 
@@ -558,19 +677,88 @@ export class GymMemberService {
       `);
     }
 
+    const memberColumns = this.database.prepare('PRAGMA table_info(gym_members)').all() as Array<{ name: string; notnull: number }>;
+    const emailColumn = memberColumns.find((column) => column.name === 'email');
+
+    if (emailColumn?.notnull === 1) {
+      this.database.exec(`
+        PRAGMA foreign_keys = OFF;
+
+        ALTER TABLE gym_members RENAME TO gym_members_legacy;
+
+        CREATE TABLE gym_members (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          full_name TEXT NOT NULL,
+          email TEXT UNIQUE,
+          phone TEXT NOT NULL,
+          membership_type TEXT NOT NULL,
+          joined_at TEXT NOT NULL,
+          notes TEXT NOT NULL DEFAULT '',
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        INSERT INTO gym_members (
+          id,
+          full_name,
+          email,
+          phone,
+          membership_type,
+          joined_at,
+          notes,
+          active,
+          created_at,
+          updated_at
+        )
+        SELECT
+          id,
+          full_name,
+          NULLIF(TRIM(email), ''),
+          phone,
+          membership_type,
+          joined_at,
+          notes,
+          active,
+          created_at,
+          updated_at
+        FROM gym_members_legacy;
+
+        DROP TABLE gym_members_legacy;
+
+        PRAGMA foreign_keys = ON;
+      `);
+    }
+
+    const membershipTypeColumns = this.database.prepare('PRAGMA table_info(membership_types)').all() as Array<{ name: string }>;
+
+    if (!membershipTypeColumns.some((column) => column.name === 'duration_count')) {
+      this.database.exec(`
+        ALTER TABLE membership_types
+        ADD COLUMN duration_count INTEGER NOT NULL DEFAULT 1;
+      `);
+    }
+
+    if (!membershipTypeColumns.some((column) => column.name === 'duration_unit')) {
+      this.database.exec(`
+        ALTER TABLE membership_types
+        ADD COLUMN duration_unit TEXT NOT NULL DEFAULT 'months';
+      `);
+    }
+
     const membershipTypeCount = this.database.prepare('SELECT COUNT(*) as total FROM membership_types').get() as { total: number };
 
     if (membershipTypeCount.total === 0) {
       const seedStatement = this.database.prepare(`
-        INSERT INTO membership_types (name, price)
-        VALUES (?, ?)
+        INSERT INTO membership_types (name, price, duration_count, duration_unit)
+        VALUES (?, ?, ?, ?)
       `);
 
       const seedTransaction = this.database.transaction(() => {
-        seedStatement.run('Monthly', 39);
-        seedStatement.run('Quarterly', 59);
-        seedStatement.run('Annual', 75);
-        seedStatement.run('Premium', 89);
+        seedStatement.run('Monthly', 39, 1, 'months');
+        seedStatement.run('Quarterly', 59, 3, 'months');
+        seedStatement.run('Annual', 75, 1, 'years');
+        seedStatement.run('Premium', 89, 1, 'months');
       });
 
       seedTransaction();
@@ -586,6 +774,25 @@ export class GymMemberService {
         phone,
         membership_type,
         joined_at,
+        (
+          SELECT MIN(ms.started_at)
+          FROM membership_subscriptions ms
+          WHERE ms.member_id = gym_members.id
+        ) as first_membership_at,
+        (
+          SELECT ms.started_at
+          FROM membership_subscriptions ms
+          WHERE ms.member_id = gym_members.id
+          ORDER BY ms.ends_at DESC, ms.started_at DESC, ms.id DESC
+          LIMIT 1
+        ) as membership_started_at,
+        (
+          SELECT ms.ends_at
+          FROM membership_subscriptions ms
+          WHERE ms.member_id = gym_members.id
+          ORDER BY ms.ends_at DESC, ms.started_at DESC, ms.id DESC
+          LIMIT 1
+        ) as membership_ends_at,
         notes,
         active
       FROM gym_members
@@ -633,6 +840,25 @@ export class GymMemberService {
         phone,
         membership_type,
         joined_at,
+        (
+          SELECT MIN(ms.started_at)
+          FROM membership_subscriptions ms
+          WHERE ms.member_id = gym_members.id
+        ) as first_membership_at,
+        (
+          SELECT ms.started_at
+          FROM membership_subscriptions ms
+          WHERE ms.member_id = gym_members.id
+          ORDER BY ms.ends_at DESC, ms.started_at DESC, ms.id DESC
+          LIMIT 1
+        ) as membership_started_at,
+        (
+          SELECT ms.ends_at
+          FROM membership_subscriptions ms
+          WHERE ms.member_id = gym_members.id
+          ORDER BY ms.ends_at DESC, ms.started_at DESC, ms.id DESC
+          LIMIT 1
+        ) as membership_ends_at,
         notes,
         active
       FROM gym_members
@@ -682,7 +908,7 @@ export class GymMemberService {
 
   private getMembershipTypeById(id: number): MembershipType {
     const statement = this.database.prepare(`
-      SELECT id, name, price, created_at
+      SELECT id, name, price, duration_count, duration_unit, created_at
       FROM membership_types
       WHERE id = ?
     `);
@@ -694,6 +920,47 @@ export class GymMemberService {
     }
 
     return this.mapMembershipTypeRow(row);
+  }
+
+  private getMembershipTypeRowById(id: number): MembershipTypeRow {
+    const statement = this.database.prepare(`
+      SELECT id, name, price, duration_count, duration_unit, created_at
+      FROM membership_types
+      WHERE id = ?
+    `);
+
+    const row = statement.get(id) as MembershipTypeRow | undefined;
+
+    if (!row) {
+      throw new Error('Membership type not found');
+    }
+
+    return row;
+  }
+
+  private getMembershipSubscriptionById(id: number): MembershipSubscriptionRecord {
+    const statement = this.database.prepare(`
+      SELECT
+        id,
+        member_id,
+        member_name,
+        membership_type_id,
+        membership_type_name,
+        started_at,
+        ends_at,
+        payment_id,
+        created_at
+      FROM membership_subscriptions
+      WHERE id = ?
+    `);
+
+    const row = statement.get(id) as MembershipSubscriptionRow | undefined;
+
+    if (!row) {
+      throw new Error('Membership subscription not found');
+    }
+
+    return this.mapMembershipSubscriptionRow(row);
   }
 
   private findMemberByPhone(phone: string): GymMemberRow {
@@ -757,6 +1024,9 @@ export class GymMemberService {
       phone: row.phone,
       membershipType: row.membership_type,
       joinedAt: row.joined_at,
+      firstMembershipAt: row.first_membership_at,
+      membershipStartedAt: row.membership_started_at,
+      membershipEndsAt: row.membership_ends_at,
       notes: row.notes,
       active: Boolean(row.active),
     };
@@ -815,6 +1085,22 @@ export class GymMemberService {
       id: row.id,
       name: row.name,
       price: row.price,
+      durationCount: row.duration_count,
+      durationUnit: row.duration_unit,
+      createdAt: row.created_at,
+    };
+  }
+
+  private mapMembershipSubscriptionRow(row: MembershipSubscriptionRow): MembershipSubscriptionRecord {
+    return {
+      id: row.id,
+      memberId: row.member_id,
+      memberName: row.member_name,
+      membershipTypeId: row.membership_type_id,
+      membershipTypeName: row.membership_type_name,
+      startedAt: row.started_at,
+      endsAt: row.ends_at,
+      paymentId: row.payment_id,
       createdAt: row.created_at,
     };
   }
@@ -822,7 +1108,7 @@ export class GymMemberService {
   private normalizeMember(member: GymMemberInput): GymMemberInput {
     const normalized = {
       fullName: member.fullName.trim(),
-      email: member.email.trim().toLowerCase(),
+      email: member.email?.trim().toLowerCase() || null,
       phone: member.phone.trim(),
       membershipType: member.membershipType.trim(),
       joinedAt: member.joinedAt.trim(),
@@ -830,7 +1116,7 @@ export class GymMemberService {
       active: Boolean(member.active),
     };
 
-    if (!normalized.fullName || !normalized.email || !normalized.phone || !normalized.membershipType || !normalized.joinedAt) {
+    if (!normalized.fullName || !normalized.phone || !normalized.membershipType || !normalized.joinedAt) {
       throw new Error('Missing required member fields');
     }
 
@@ -966,13 +1252,63 @@ export class GymMemberService {
     const normalized = {
       name: membershipType.name.trim(),
       price: Number(membershipType.price),
+      durationCount: Number(membershipType.durationCount),
+      durationUnit: membershipType.durationUnit,
     };
 
     if (!normalized.name || Number.isNaN(normalized.price) || normalized.price < 0) {
       throw new Error('Invalid membership type');
     }
 
+    if (Number.isNaN(normalized.durationCount) || normalized.durationCount <= 0) {
+      throw new Error('Invalid membership duration');
+    }
+
+    if (!['days', 'months', 'years'].includes(normalized.durationUnit)) {
+      throw new Error('Invalid membership duration unit');
+    }
+
     return normalized;
+  }
+
+  private normalizeMembershipSubscription(input: MembershipSubscriptionInput): MembershipSubscriptionInput {
+    const normalized = {
+      memberId: Number(input.memberId),
+      membershipTypeId: Number(input.membershipTypeId),
+      startedAt: input.startedAt.trim(),
+    };
+
+    if (Number.isNaN(normalized.memberId) || normalized.memberId <= 0) {
+      throw new Error('Invalid member');
+    }
+
+    if (Number.isNaN(normalized.membershipTypeId) || normalized.membershipTypeId <= 0) {
+      throw new Error('Invalid membership type');
+    }
+
+    if (!normalized.startedAt) {
+      throw new Error('Start date is required');
+    }
+
+    return normalized;
+  }
+
+  private calculateMembershipEndDate(startedAt: string, durationCount: number, durationUnit: MembershipDurationUnit): string {
+    const date = new Date(startedAt.includes('T') ? startedAt : `${startedAt}T00:00:00`);
+
+    if (Number.isNaN(date.getTime())) {
+      throw new Error('Invalid membership start date');
+    }
+
+    if (durationUnit === 'days') {
+      date.setDate(date.getDate() + durationCount);
+    } else if (durationUnit === 'months') {
+      date.setMonth(date.getMonth() + durationCount);
+    } else {
+      date.setFullYear(date.getFullYear() + durationCount);
+    }
+
+    return date.toISOString().slice(0, 10);
   }
 
   private normalizePhone(phone: string): string {

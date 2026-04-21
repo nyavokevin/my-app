@@ -97,6 +97,7 @@ const registerGymMemberHandlers = () => {
   ipcMain.removeHandler('gym-members:membership-types:create');
   ipcMain.removeHandler('gym-members:membership-types:update');
   ipcMain.removeHandler('gym-members:membership-types:remove');
+  ipcMain.removeHandler('gym-members:membership-subscriptions:create');
 
   ipcMain.handle('gym-members:list', async () => getMemberService().listMembers());
   ipcMain.handle('gym-members:create', async (_event, member: GymMemberInput) => getMemberService().createMember(member));
@@ -136,6 +137,7 @@ const registerGymMemberHandlers = () => {
   ipcMain.handle('gym-members:membership-types:remove', async (_event, id: number) => {
     getMemberService().deleteMembershipType(id);
   });
+  ipcMain.handle('gym-members:membership-subscriptions:create', async (_event, input) => getMemberService().createMembershipSubscription(input));
 };
 
 const initializeMainProcess = () => {

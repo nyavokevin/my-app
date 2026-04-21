@@ -5,6 +5,7 @@ import type {
 	AttendanceSource,
 	GymMemberApi,
 	GymMemberInput,
+	MembershipSubscriptionInput,
 	MembershipTypeInput,
 	PaymentInput,
 	StockItemInput,
@@ -35,6 +36,7 @@ const gymMembersApi: GymMemberApi = {
 	createMembershipType: (membershipType: MembershipTypeInput) => ipcRenderer.invoke('gym-members:membership-types:create', membershipType),
 	updateMembershipType: (id: number, membershipType: MembershipTypeInput) => ipcRenderer.invoke('gym-members:membership-types:update', id, membershipType),
 	removeMembershipType: (id: number) => ipcRenderer.invoke('gym-members:membership-types:remove', id),
+	createMembershipSubscription: (input: MembershipSubscriptionInput) => ipcRenderer.invoke('gym-members:membership-subscriptions:create', input),
 };
 
 contextBridge.exposeInMainWorld('gymMembers', gymMembersApi);

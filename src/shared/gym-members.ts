@@ -1,10 +1,13 @@
 export interface GymMember {
   id: number;
   fullName: string;
-  email: string;
+  email: string | null;
   phone: string;
   membershipType: string;
   joinedAt: string;
+  firstMembershipAt: string | null;
+  membershipStartedAt: string | null;
+  membershipEndsAt: string | null;
   notes: string;
   active: boolean;
 }
@@ -13,6 +16,7 @@ export type AttendanceSource = 'phone-number' | 'qr-phone' | 'member-id';
 export type AttendanceAction = 'check-in' | 'check-out';
 export type PaymentCategory = 'membership' | 'stock';
 export type StockHistoryAction = 'create' | 'restock' | 'sale';
+export type MembershipDurationUnit = 'days' | 'months' | 'years';
 
 export interface AttendanceRecord {
   id: number;
@@ -82,17 +86,39 @@ export interface MembershipType {
   id: number;
   name: string;
   price: number;
+  durationCount: number;
+  durationUnit: MembershipDurationUnit;
   createdAt: string;
 }
 
 export interface MembershipTypeInput {
   name: string;
   price: number;
+  durationCount: number;
+  durationUnit: MembershipDurationUnit;
+}
+
+export interface MembershipSubscriptionRecord {
+  id: number;
+  memberId: number;
+  memberName: string;
+  membershipTypeId: number;
+  membershipTypeName: string;
+  startedAt: string;
+  endsAt: string;
+  paymentId: number | null;
+  createdAt: string;
+}
+
+export interface MembershipSubscriptionInput {
+  memberId: number;
+  membershipTypeId: number;
+  startedAt: string;
 }
 
 export interface GymMemberInput {
   fullName: string;
-  email: string;
+  email: string | null;
   phone: string;
   membershipType: string;
   joinedAt: string;
@@ -123,4 +149,5 @@ export interface GymMemberApi {
   createMembershipType(membershipType: MembershipTypeInput): Promise<MembershipType>;
   updateMembershipType(id: number, membershipType: MembershipTypeInput): Promise<MembershipType>;
   removeMembershipType(id: number): Promise<void>;
+  createMembershipSubscription(input: MembershipSubscriptionInput): Promise<MembershipSubscriptionRecord>;
 }
