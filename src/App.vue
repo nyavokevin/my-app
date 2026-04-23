@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import '@flaticon/flaticon-uicons/css/regular/rounded.css';
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 
 import { memberApi } from './renderer/member-api';
 import type {
@@ -1519,7 +1519,7 @@ const submitPhoneCheckIn = async (
     openPresenceMembershipAlert(attendance.memberId);
     checkInPhone.value = '';
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : `Impossible d enregistrer ${action === 'check-in' ? 'l entree' : 'la sortie'} de ce membre.`;
+    errorMessage.value = formatAttendanceErrorMessage(error, `Impossible d enregistrer ${action === 'check-in' ? 'l entree' : 'la sortie'} de ce membre.`);
   } finally {
     isCheckInSaving.value = false;
   }
@@ -1561,7 +1561,7 @@ const submitPresenceLookup = async () => {
     openPresenceMembershipAlert(attendance.memberId);
     presenceLookup.value = '';
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Impossible de traiter cette recherche.';
+    errorMessage.value = formatAttendanceErrorMessage(error, 'Impossible de traiter cette recherche.');
   } finally {
     isCheckInSaving.value = false;
   }
@@ -1574,6 +1574,41 @@ const openClientPresenceWindow = async () => {
     await memberApi.openClientPresenceWindow();
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : 'Impossible d ouvrir la fenetre de presence client.';
+  }
+};
+
+const formatAttendanceErrorMessage = (error: unknown, fallbackMessage: string) => {
+  const rawMessage = error instanceof Error ? error.message : fallbackMessage;
+  const message = rawMessage.replace(/^Error invoking remote method '[^']+': Error:\s*/, '');
+
+  if (message.includes('No member found for this phone number') || message.includes('Aucun membre trouve pour ce numero')) {
+    return 'Aucun membre trouve pour ce numero. Essayez avec le telephone enregistre ou l ID membre.';
+  }
+
+  if (message.includes('Phone number is required')) {
+    return 'Le numero de telephone ou l identifiant membre est requis.';
+  }
+
+  if (message.includes('Inactive members cannot be checked in')) {
+    return 'Ce membre est inactif et ne peut pas pointer.';
+  }
+
+  return message || fallbackMessage;
+};
+
+const refreshAttendanceForAdmin = async () => {
+  if (isPresenceClientWindow) {
+    return;
+  }
+
+  if (currentView.value !== 'dashboard' && currentView.value !== 'checkins') {
+    return;
+  }
+
+  try {
+    attendanceHistory.value = await memberApi.listAttendanceHistory();
+  } catch {
+    // Ignore background refresh failures and keep explicit actions authoritative.
   }
 };
 
@@ -1860,8 +1895,32 @@ const initialsFor = (value: string) => {
     .join('');
 };
 
+const handleAdminWindowFocus = () => {
+  void refreshAttendanceForAdmin();
+};
+
+let adminAttendanceRefreshTimer: number | null = null;
+
 onMounted(async () => {
   await reloadAppData();
+
+  if (isPresenceClientWindow) {
+    return;
+  }
+
+  window.addEventListener('focus', handleAdminWindowFocus);
+  adminAttendanceRefreshTimer = window.setInterval(() => {
+    void refreshAttendanceForAdmin();
+  }, 4000);
+});
+
+onUnmounted(() => {
+  if (adminAttendanceRefreshTimer !== null) {
+    window.clearInterval(adminAttendanceRefreshTimer);
+    adminAttendanceRefreshTimer = null;
+  }
+
+  window.removeEventListener('focus', handleAdminWindowFocus);
 });
 </script>
 
@@ -1912,7 +1971,7 @@ onMounted(async () => {
         </button>
       </div>
 
-      <header class="topbar">
+      <header v-if="!isPresenceClientWindow" class="topbar">
         <div>
           <h1>{{ pageTitle }}</h1>
           <p>{{ pageDescription }}</p>
@@ -2830,7 +2889,7 @@ onMounted(async () => {
               </div>
             </div>
 
-            <div class="attendance-action-picker">
+            <div class="attendance-action-picker presence-client-action-picker">
               <button
                 :class="['action-toggle', selectedAttendanceAction === 'check-in' && 'is-active']"
                 type="button"
@@ -2848,10 +2907,10 @@ onMounted(async () => {
             </div>
 
             <div class="presence-client-actions">
-              <form class="checkin-form presence-lookup-form" @submit.prevent="submitPresenceLookup()">
+              <form class="checkin-form presence-lookup-form presence-client-kiosk-form" @submit.prevent="submitPresenceLookup()">
                 <label>
                   <span>Telephone ou ID membre</span>
-                  <input v-model="presenceLookup" required type="text" placeholder="06 00 00 00 00 ou 1024" />
+                  <input v-model="presenceLookup" required type="text" placeholder="Entrer ID membre ou numero" />
                 </label>
                 <button class="primary-button" :disabled="isCheckInSaving" type="submit">
                   {{
@@ -2861,41 +2920,9 @@ onMounted(async () => {
                   }}
                 </button>
               </form>
-            </div>
-
-            <div class="panel-header history-header">
-              <div>
-                <h2>Historique recent des presences</h2>
-                <p>Dernieres entrees et sorties enregistrees dans la salle</p>
+              <div class="checkin-hint presence-client-hint">
+                Saisissez uniquement l identifiant membre ou le numero de telephone, puis validez pour enregistrer la presence.
               </div>
-              <button class="panel-chip" type="button" @click="loadAttendanceHistory">Actualiser</button>
-            </div>
-
-            <div v-if="isAttendanceLoading" class="empty-state">Chargement de l historique des presences...</div>
-            <div v-else-if="groupedAttendanceHistory.length === 0" class="empty-state">Aucune presence n a encore ete enregistree.</div>
-            <div v-else class="attendance-history-list compact-history-list">
-              <section v-for="group in groupedAttendanceHistory" :key="group.dayKey" class="attendance-day-group">
-                <div class="attendance-day-header">
-                  <h3>{{ group.dayLabel }}</h3>
-                  <span>{{ group.records.length }} evenement{{ group.records.length > 1 ? 's' : '' }}</span>
-                </div>
-
-                <div class="attendance-day-rows">
-                  <div v-for="entry in group.records" :key="entry.id" class="attendance-row">
-                    <div class="attendance-copy">
-                      <strong>{{ entry.memberName }}</strong>
-                      <span>#{{ entry.memberId }} · {{ entry.memberPhone }}</span>
-                    </div>
-                    <div class="attendance-meta">
-                      <span :class="['attendance-action', entry.action === 'check-out' && 'is-check-out']">
-                        {{ formatAttendanceAction(entry.action) }}
-                      </span>
-                      <span class="attendance-source">{{ formatAttendanceSource(entry.source) }}</span>
-                      <span>{{ formatAttendanceDate(entry.checkedInAt) }}</span>
-                    </div>
-                  </div>
-                </div>
-              </section>
             </div>
           </article>
         </section>

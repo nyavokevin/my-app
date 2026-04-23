@@ -51,6 +51,12 @@ textarea {
   display: block;
 }
 
+.presence-shell .main-shell {
+  min-height: 100vh;
+  display: block;
+  padding: 0;
+}
+
 .sidebar {
   width: 268px;
   min-width: 268px;
@@ -636,6 +642,7 @@ textarea {
 
 .presence-client-grid {
   grid-template-columns: minmax(0, 1fr);
+  min-height: 100vh;
 }
 
 .lower-grid,
@@ -1071,10 +1078,103 @@ textarea {
   grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   margin-bottom: 22px;
+  justify-items: center;
 }
 
 .presence-lookup-form {
   max-width: 420px;
+}
+
+.presence-client-action-picker {
+  width: min(100%, 720px);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  justify-self: center;
+  align-self: center;
+  gap: 12px;
+  padding: 10px;
+  margin: 12px auto 24px;
+  border-radius: 24px;
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.9), rgba(30, 41, 59, 0.72));
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  box-shadow: 0 20px 48px rgba(2, 6, 23, 0.28);
+}
+
+.presence-client-action-picker .action-toggle {
+  min-height: 64px;
+  border-radius: 18px;
+  font-size: 1rem;
+  letter-spacing: 0.03em;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.presence-client-action-picker .action-toggle.is-active {
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.26), rgba(16, 185, 129, 0.18));
+  box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.2);
+}
+
+.presence-client-action-picker .action-toggle.is-check-out.is-active {
+  background: linear-gradient(135deg, rgba(248, 113, 113, 0.22), rgba(239, 68, 68, 0.16));
+  box-shadow: inset 0 0 0 1px rgba(252, 165, 165, 0.18);
+}
+
+.presence-client-panel {
+  display: grid;
+  gap: 18px;
+  width: 100%;
+  min-height: 100vh;
+  max-width: none;
+  justify-self: stretch;
+  align-content: center;
+  justify-items: center;
+  padding: 40px clamp(20px, 4vw, 56px);
+  border-radius: 0;
+}
+
+.presence-client-panel .panel-header {
+  justify-content: center;
+  text-align: center;
+}
+
+.presence-client-panel .panel-header > div {
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.presence-client-kiosk-form {
+  width: min(100%, 720px);
+  margin: 0 auto;
+  gap: 18px;
+}
+
+.presence-client-kiosk-form label {
+  width: 100%;
+  gap: 12px;
+  justify-items: center;
+}
+
+.presence-client-kiosk-form label span {
+  text-align: center;
+}
+
+.presence-client-kiosk-form input {
+  width: 100%;
+  min-height: 110px;
+  padding: 28px 30px;
+  font-size: 2rem;
+  text-align: center;
+  border-radius: 24px;
+}
+
+.presence-client-kiosk-form button {
+  width: 100%;
+  min-height: 72px;
+  font-size: 1.15rem;
+}
+
+.presence-client-hint {
+  margin-bottom: 0;
+  text-align: center;
 }
 
 .checkin-form label {
@@ -1597,6 +1697,10 @@ textarea {
   .attendance-action-picker {
     display: grid;
     width: 100%;
+  }
+
+  .presence-client-action-picker {
+    grid-template-columns: 1fr;
   }
 
   .pagination-page,

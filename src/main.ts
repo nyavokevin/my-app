@@ -31,12 +31,19 @@ const createWindow = () => {
   mainWindow = new BrowserWindow({
     width: 800,
     height: 600,
+    show: false,
+    fullscreen: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
     },
   });
 
   loadRendererWindow(mainWindow);
+
+  mainWindow.once('ready-to-show', () => {
+    mainWindow?.setFullScreen(true);
+    mainWindow?.show();
+  });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -54,12 +61,19 @@ const createPresenceWindow = () => {
     height: 860,
     title: 'Presence client',
     autoHideMenuBar: true,
+    show: false,
+    fullscreen: true, 
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
     },
   });
 
   loadRendererWindow(presenceWindow, 'view=presence-client');
+
+  presenceWindow.once('ready-to-show', () => {
+    presenceWindow?.setFullScreen(true);
+    presenceWindow?.show();
+  });
 
   presenceWindow.on('closed', () => {
     presenceWindow = null;

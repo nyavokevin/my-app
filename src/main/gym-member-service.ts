@@ -1447,10 +1447,17 @@ export class GymMemberService {
     `);
 
     const rows = statement.all() as GymMemberRow[];
-    const row = rows.find((candidate) => this.normalizePhone(candidate.phone) === phone);
+    const row = rows.find((candidate) => this.normalizePhone(candidate.phone) === phone)
+      ?? rows.find((candidate) => {
+        const normalizedCandidatePhone = this.normalizePhone(candidate.phone);
+
+        return normalizedCandidatePhone.length >= 9
+          && phone.length >= 9
+          && normalizedCandidatePhone.slice(-9) === phone.slice(-9);
+      });
 
     if (!row) {
-      throw new Error('No member found for this phone number');
+      throw new Error('Aucun membre trouve pour ce numero. Essayez avec le telephone enregistre ou l ID membre.');
     }
 
     return row;
@@ -1828,6 +1835,24 @@ export class GymMemberService {
   }
 
   private normalizePhone(phone: string): string {
-    return phone.replace(/\D/g, '');
+    const digitsOnly = phone.replace(/\D/g, '');
+
+    if (!digitsOnly) {
+      return '';
+    }
+
+    if (digitsOnly.startsWith('261') && digitsOnly.length >= 12) {
+      return digitsOnly;
+    }
+
+    if (digitsOnly.startsWith('0') && digitsOnly.length === 10) {
+      return `261${digitsOnly.slice(1)}`;
+    }
+
+    if (digitsOnly.length === 9) {
+      return `261${digitsOnly}`;
+    }
+
+    return digitsOnly;
   }
 }
